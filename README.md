@@ -1,6 +1,6 @@
 # Crawler Platform
 
-**Version: v0.0.12**
+**Version: v0.0.13**
 
 基于uTLS的高性能爬虫平台，支持TLS指纹伪装、热连接池和IP池管理。
 
