@@ -1,0 +1,2 @@
+# command-line-arguments
+./test_pool_concurrent.go:97:15: pool.Stats undefined (type *utlsclient.UTLSHotConnPool has no field or method Stats, but does have unexported field stats)

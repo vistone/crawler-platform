@@ -13,7 +13,10 @@ import (
 	"time"
 
 	projlogger "crawler-platform/logger"
+
 	utls "github.com/refraction-networking/utls"
+
+	"golang.org/x/net/http2"
 )
 
 // IsConnectionError 检查错误是否是连接错误（导出以供测试使用）
@@ -85,6 +88,10 @@ func (c *UTLSClient) DoWithContext(ctx context.Context, req *http.Request) (*htt
 	if req.Header.Get("User-Agent") == "" {
 		req.Header.Set("User-Agent", c.userAgent)
 	}
+	// 设置Accept-Language（如果没有设置）
+	if req.Header.Get("Accept-Language") == "" && c.conn.acceptLanguage != "" {
+		req.Header.Set("Accept-Language", c.conn.acceptLanguage)
+	}
 	// Host 优先由调用方设定；若为空则从热连接参数传递（仅参数注入，不做连接管理）
 	if req.Host == "" {
 		if h := c.conn.TargetHost(); h != "" {
@@ -120,6 +127,69 @@ func (c *UTLSClient) doRequest(ctx context.Context, req *http.Request) (*http.Re
 		defer cancel()
 	}
 
+	// 检测协商的协议
+	negotiatedProto := c.conn.tlsConn.ConnectionState().NegotiatedProtocol
+	projlogger.Debug("使用协议: %s", negotiatedProto)
+
+	// 如果协商了 HTTP/2，使用 http2.Transport
+	if negotiatedProto == "h2" {
+		return c.doHTTP2Request(ctx, req)
+	}
+
+	// 否则使用 HTTP/1.1
+	return c.doHTTP1Request(ctx, req)
+}
+
+// doHTTP2Request 使用 HTTP/2 执行请求
+func (c *UTLSClient) doHTTP2Request(ctx context.Context, req *http.Request) (*http.Response, error) {
+	// 获取或创建 HTTP/2 客户端连接
+	c.conn.h2Mu.Lock()
+	var cc *http2.ClientConn
+	if c.conn.h2ClientConn != nil {
+		cc = c.conn.h2ClientConn.(*http2.ClientConn)
+		// 检查连接是否可用
+		if !cc.CanTakeNewRequest() {
+			cc.Close()
+			c.conn.h2ClientConn = nil
+			cc = nil
+		}
+	}
+
+	if cc == nil {
+		t := &http2.Transport{}
+		var err error
+		cc, err = t.NewClientConn(c.conn.tlsConn)
+		if err != nil {
+			c.conn.h2Mu.Unlock()
+			return nil, fmt.Errorf("创建HTTP/2连接失败: %w", err)
+		}
+		c.conn.h2ClientConn = cc
+		projlogger.Debug("创建新的HTTP/2客户端连接")
+	} else {
+		projlogger.Debug("复用现有HTTP/2客户端连接")
+	}
+	c.conn.h2Mu.Unlock()
+
+	projlogger.Debug("发送HTTP/2请求: %s %s", req.Method, req.URL.String())
+
+	// 执行请求
+	resp, err := cc.RoundTrip(req)
+	if err != nil {
+		// 如果请求失败，标记连接为需要重建
+		c.conn.h2Mu.Lock()
+		if c.conn.h2ClientConn == cc {
+			cc.Close()
+			c.conn.h2ClientConn = nil
+		}
+		c.conn.h2Mu.Unlock()
+		return nil, fmt.Errorf("发送请求失败: %w", err)
+	}
+
+	return resp, nil
+}
+
+// doHTTP1Request 使用 HTTP/1.1 执行请求
+func (c *UTLSClient) doHTTP1Request(ctx context.Context, req *http.Request) (*http.Response, error) {
 	// 构建原始 HTTP 请求
 	rawReq, err := c.buildRawRequest(req)
 	if err != nil {

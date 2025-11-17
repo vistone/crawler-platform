@@ -210,7 +210,12 @@ type UTLSConnection struct {
 	targetHost string      // 目标域名（用于Host头）
 
 	// 指纹信息
-	fingerprint Profile // 使用的TLS指纹
+	fingerprint    Profile // 使用的TLS指纹
+	acceptLanguage string  // 随机生成的Accept-Language头
+
+	// HTTP/2 支持
+	h2ClientConn interface{} // HTTP/2客户端连接（*http2.ClientConn）
+	h2Mu         sync.Mutex  // HTTP/2连接锁
 
 	// 生命周期管理
 	created     time.Time // 创建时间
@@ -242,9 +247,6 @@ type UTLSHotConnPool struct {
 	// 依赖模块
 	fingerprintLib *Library
 	ipPool         IPPoolProvider
-
-	// 后台任务
-	cleanupTicker *time.Ticker // 清理定时器
 
 	// 统计信息
 	stats PoolStats
@@ -393,6 +395,49 @@ func (p *UTLSHotConnPool) GetConnectionWithValidation(fullURL string) (*UTLSConn
 	return conn, nil
 }
 
+// GetConnectionToIP 获取到指定IP的连接（用于IP池测试）
+func (p *UTLSHotConnPool) GetConnectionToIP(fullURL, targetIP string) (*UTLSConnection, error) {
+	// 解析URL获取主机名
+	parsedURL, err := url.Parse(fullURL)
+	if err != nil {
+		return nil, fmt.Errorf("解析URL失败: %w", err)
+	}
+
+	if parsedURL.Scheme != "https" {
+		return nil, fmt.Errorf("只支持HTTPS协议")
+	}
+
+	targetHost := parsedURL.Host
+	if targetHost == "" {
+		return nil, fmt.Errorf("无效的主机名")
+	}
+
+	// 1. 尝试从池中获取到该IP的现有连接
+	if conn := p.getExistingConnectionToIP(targetHost, targetIP); conn != nil {
+		// 验证连接对指定路径的可用性
+		if err := p.validateConnectionWithPath(conn, parsedURL.Path); err == nil {
+			projlogger.Debug("复用IP池连接: %s -> %s", targetHost, targetIP)
+			return conn, nil
+		}
+		// 如果验证失败，标记连接为不健康并移除
+		p.removeFromPool(conn)
+	}
+
+	// 2. 直接创建到指定IP的新连接
+	projlogger.Debug("创建到指定IP的连接: %s -> %s", targetHost, targetIP)
+
+	// 选择TLS指纹
+	fingerprint := p.selectFingerprint()
+
+	// 创建并验证连接
+	conn, err := p.createAndValidateConnection(targetIP, targetHost, fingerprint, parsedURL.Path)
+	if err != nil {
+		return nil, fmt.Errorf("创建到IP %s 的连接失败: %w", targetIP, err)
+	}
+
+	return conn, nil
+}
+
 // getExistingConnection 获取现有连接
 func (p *UTLSHotConnPool) getExistingConnection(targetHost string) *UTLSConnection {
 	// 使用ConnectionManager获取该域名的所有连接
@@ -401,16 +446,81 @@ func (p *UTLSHotConnPool) getExistingConnection(targetHost string) *UTLSConnecti
 	// 随机选择一个健康的连接
 	for _, conn := range connections {
 		conn.mu.Lock()
-		if !conn.inUse && conn.healthy && p.healthChecker.CheckConnection(conn) {
-			// 标记为使用中
-			conn.inUse = true
-			conn.lastUsed = time.Now()
-			atomic.AddInt64(&conn.requestCount, 1)
+		// 先检查基本条件
+		if conn.inUse || !conn.healthy {
 			conn.mu.Unlock()
-			projlogger.Debug("复用现有连接: %s -> %s", targetHost, conn.targetIP)
-			return conn
+			continue
 		}
+
+		// 解锁后再进行健康检查（避免死锁）
 		conn.mu.Unlock()
+
+		// 健康检查
+		if !p.healthChecker.CheckConnection(conn) {
+			continue
+		}
+
+		// 再次加锁并标记为使用中
+		conn.mu.Lock()
+		// 双重检查：可能在解锁期间被其他goroutine获取
+		if conn.inUse || !conn.healthy {
+			conn.mu.Unlock()
+			continue
+		}
+
+		// 标记为使用中
+		conn.inUse = true
+		conn.lastUsed = time.Now()
+		atomic.AddInt64(&conn.requestCount, 1)
+		conn.mu.Unlock()
+		projlogger.Debug("复用现有连接: %s -> %s", targetHost, conn.targetIP)
+		return conn
+	}
+
+	return nil
+}
+
+// getExistingConnectionToIP 获取到指定IP的现有连接
+func (p *UTLSHotConnPool) getExistingConnectionToIP(targetHost, targetIP string) *UTLSConnection {
+	// 使用ConnectionManager获取该域名的所有连接
+	connections := p.connManager.GetConnectionsForHost(targetHost)
+
+	// 查找到指定IP的健康连接
+	for _, conn := range connections {
+		// 检查IP是否匹配
+		if conn.targetIP != targetIP {
+			continue
+		}
+
+		conn.mu.Lock()
+		// 检查基本条件
+		if conn.inUse || !conn.healthy {
+			conn.mu.Unlock()
+			continue
+		}
+
+		// 解锁后再进行健康检查（避免死锁）
+		conn.mu.Unlock()
+
+		// 健康检查
+		if !p.healthChecker.CheckConnection(conn) {
+			continue
+		}
+
+		// 再次加锁并标记为使用中
+		conn.mu.Lock()
+		// 双重检查：可能在解锁期间被其他goroutine获取
+		if conn.inUse || !conn.healthy {
+			conn.mu.Unlock()
+			continue
+		}
+
+		// 标记为使用中
+		conn.inUse = true
+		conn.lastUsed = time.Now()
+		atomic.AddInt64(&conn.requestCount, 1)
+		conn.mu.Unlock()
+		return conn
 	}
 
 	return nil
@@ -450,7 +560,16 @@ func (p *UTLSHotConnPool) createNewHotConnectionWithValidation(targetHost, path 
 // establishConnection 建立连接
 func (p *UTLSHotConnPool) establishConnection(ip, targetHost string, fingerprint Profile) (*UTLSConnection, error) {
 	// 1. 建立TCP连接
-	address := fmt.Sprintf("%s:%d", ip, DefaultHTTPSPort)
+	// 处理IPv6地址格式：需要用方括号包裹
+	var address string
+	if strings.Contains(ip, ":") {
+		// IPv6地址
+		address = fmt.Sprintf("[%s]:%d", ip, DefaultHTTPSPort)
+	} else {
+		// IPv4地址
+		address = fmt.Sprintf("%s:%d", ip, DefaultHTTPSPort)
+	}
+
 	tcpConn, err := net.DialTimeout("tcp", address, p.config.ConnTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("TCP连接失败: %v", err)
@@ -460,6 +579,8 @@ func (p *UTLSHotConnPool) establishConnection(ip, targetHost string, fingerprint
 	tlsConn := utls.UClient(tcpConn, &utls.Config{
 		ServerName:         targetHost,
 		InsecureSkipVerify: false,
+		NextProtos:         []string{"h2", "http/1.1"},
+		OmitEmptyPsk:       true, // 避免空 PSK 问题
 	}, fingerprint.HelloID)
 
 	// 4. 执行TLS握手
@@ -468,19 +589,24 @@ func (p *UTLSHotConnPool) establishConnection(ip, targetHost string, fingerprint
 		return nil, fmt.Errorf("TLS握手失败: %v", err)
 	}
 
-	// 5. 包装连接对象
+	// 5. 检测协商的协议
+	negotiatedProto := tlsConn.ConnectionState().NegotiatedProtocol
+	projlogger.Debug("TLS握手成功，协商协议: %s", negotiatedProto)
+
+	// 6. 包装连接对象
 	conn := &UTLSConnection{
-		conn:         tcpConn,
-		tlsConn:      tlsConn,
-		fingerprint:  fingerprint,
-		targetIP:     ip,
-		targetHost:   targetHost,
-		created:      time.Now(),
-		lastUsed:     time.Now(),
-		lastChecked:  time.Now(),
-		inUse:        true,
-		healthy:      true,
-		requestCount: 1,
+		conn:           tcpConn,
+		tlsConn:        tlsConn,
+		fingerprint:    fingerprint,
+		acceptLanguage: fpLibrary.RandomAcceptLanguage(), // 随机生成Accept-Language
+		targetIP:       ip,
+		targetHost:     targetHost,
+		created:        time.Now(),
+		lastUsed:       time.Now(),
+		lastChecked:    time.Now(),
+		inUse:          true,
+		healthy:        true,
+		requestCount:   1,
 	}
 
 	// 初始化条件变量（修复并发安全问题）
@@ -496,6 +622,33 @@ func (p *UTLSHotConnPool) validateConnection(conn *UTLSConnection) error {
 
 // validateConnectionWithPath 验证连接对指定路径的可用性
 func (p *UTLSHotConnPool) validateConnectionWithPath(conn *UTLSConnection, path string) error {
+	// 对于已经建立的连接，只做简单的健康检查
+	// 检测协商的协议
+	negotiatedProto := conn.tlsConn.ConnectionState().NegotiatedProtocol
+
+	// HTTP/2 连接的验证：只检查连接状态，不发送验证请求
+	if negotiatedProto == "h2" {
+		conn.mu.Lock()
+		defer conn.mu.Unlock()
+
+		// 检查连接是否健康
+		if !conn.healthy {
+			return fmt.Errorf("连接不健康")
+		}
+
+		// 检查是否超时
+		if time.Since(conn.created) > p.config.MaxLifetime {
+			conn.healthy = false
+			return fmt.Errorf("连接已超时")
+		}
+
+		// HTTP/2 连接验证通过
+		conn.lastChecked = time.Now()
+		projlogger.Debug("HTTP/2连接验证通过: %s", conn.targetIP)
+		return nil
+	}
+
+	// HTTP/1.1 连接的验证：发送 HEAD 请求
 	// 确保path以/开头
 	if path == "" {
 		path = "/"
@@ -503,54 +656,90 @@ func (p *UTLSHotConnPool) validateConnectionWithPath(conn *UTLSConnection, path 
 		path = "/" + path
 	}
 
-	// 发送轻量级HEAD请求验证连接
-	testReq := &http.Request{
-		Method: "HEAD",
-		URL:    &url.URL{Scheme: HTTPSProtocol, Host: conn.targetHost, Path: path},
-		Header: make(http.Header),
-		Host:   conn.targetHost,
-	}
+	// 构造最小化的 HEAD 原始请求（不通过客户端栈，不影响统计）
+	raw := strings.Builder{}
+	raw.WriteString("HEAD ")
+	raw.WriteString(path)
+	raw.WriteString(" HTTP/1.1\r\n")
+	raw.WriteString("Host: ")
+	raw.WriteString(conn.targetHost)
+	raw.WriteString("\r\n")
+	raw.WriteString("User-Agent: ")
+	raw.WriteString(conn.fingerprint.UserAgent)
+	raw.WriteString("\r\n")
+	raw.WriteString("Accept-Language: ")
+	raw.WriteString(conn.acceptLanguage) // 使用随机生成的Accept-Language
+	raw.WriteString("\r\n")
+	raw.WriteString("Connection: keep-alive\r\n")
+	raw.WriteString("Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n")
+	raw.WriteString("\r\n")
 
-	// 设置必要的头部
-	testReq.Header.Set("User-Agent", conn.fingerprint.UserAgent)
-	testReq.Header.Set("Connection", "keep-alive")
-	testReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-
-	// 设置超时
-	ctx, cancel := context.WithTimeout(context.Background(), p.config.TestTimeout)
-	defer cancel()
-
-	// 创建HTTP客户端
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return conn.conn, nil
-			},
-		},
-	}
-
-	// 发送测试请求
-	resp, err := client.Do(testReq.WithContext(ctx))
-	if err != nil {
+	// 发送请求并读取响应（直接在 tlsConn 上进行）
+	// 不修改 requestCount/lastUsed，保持非侵入
+	// 为避免竞态，验证阶段该连接已处于 inUse=true
+	if _, err := conn.tlsConn.Write([]byte(raw.String())); err != nil {
+		conn.mu.Lock()
+		conn.healthy = false
+		conn.errorCount++
+		conn.mu.Unlock()
 		return fmt.Errorf("连接测试失败: %v", err)
 	}
-	defer resp.Body.Close()
+
+	reader := bufio.NewReader(conn.tlsConn)
+	// 读取状态行
+	statusLine, err := reader.ReadString('\n')
+	if err != nil {
+		conn.mu.Lock()
+		conn.healthy = false
+		conn.errorCount++
+		conn.mu.Unlock()
+		return fmt.Errorf("连接测试失败: %v", err)
+	}
+	parts := strings.Split(strings.TrimSpace(statusLine), " ")
+	if len(parts) < 3 {
+		conn.mu.Lock()
+		conn.healthy = false
+		conn.mu.Unlock()
+		return fmt.Errorf("连接测试失败: 无效状态行: %s", statusLine)
+	}
+	var code int
+	if _, err := fmt.Sscanf(parts[1], "%d", &code); err != nil {
+		conn.mu.Lock()
+		conn.healthy = false
+		conn.mu.Unlock()
+		return fmt.Errorf("连接测试失败: 解析状态码失败: %v", err)
+	}
+
+	// 跳过响应头（读到空行）
+	for {
+		line, e := reader.ReadString('\n')
+		if e != nil {
+			break
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			break
+		}
+	}
 
 	// 根据状态码判断连接质量
-	switch resp.StatusCode {
-	case StatusOK:
-		// 连接良好
+	switch code {
+	case StatusOK, StatusNoContent:
+		conn.mu.Lock()
 		conn.healthy = true
 		conn.lastChecked = time.Now()
+		conn.mu.Unlock()
 		return nil
 	case StatusForbidden:
-		// IP被封禁
+		conn.mu.Lock()
 		conn.healthy = false
+		conn.mu.Unlock()
 		return fmt.Errorf("%w: IP %s 返回403", ErrIPBlocked, conn.targetIP)
 	default:
-		// 其他错误
+		conn.mu.Lock()
 		conn.healthy = false
-		return fmt.Errorf("连接验证失败，状态码: %d", resp.StatusCode)
+		conn.mu.Unlock()
+		return fmt.Errorf("连接验证失败，状态码: %d", code)
 	}
 }
 
@@ -1010,6 +1199,11 @@ func (conn *UTLSConnection) Fingerprint() Profile {
 	return conn.fingerprint
 }
 
+// AcceptLanguage 返回连接的Accept-Language头部值
+func (conn *UTLSConnection) AcceptLanguage() string {
+	return conn.acceptLanguage
+}
+
 // Created 返回连接创建时间
 func (conn *UTLSConnection) Created() time.Time {
 	return conn.created
@@ -1055,6 +1249,16 @@ func (conn *UTLSConnection) Stats() ConnectionStats {
 func (conn *UTLSConnection) Close() error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
+
+	// 关闭 HTTP/2 客户端连接
+	conn.h2Mu.Lock()
+	if conn.h2ClientConn != nil {
+		if cc, ok := conn.h2ClientConn.(interface{ Close() error }); ok {
+			cc.Close()
+		}
+		conn.h2ClientConn = nil
+	}
+	conn.h2Mu.Unlock()
 
 	if conn.tlsConn != nil {
 		conn.tlsConn.Close()
