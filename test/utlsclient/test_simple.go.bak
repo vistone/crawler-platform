@@ -1,0 +1,99 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"time"
+
+	"crawler-platform/utlsclient"
+)
+
+func main() {
+	fmt.Println("=== UTLSHotConnPool 和 UTLSClient 测试 ===")
+
+	// 1. 创建连接池配置
+	config := utlsclient.DefaultPoolConfig()
+	config.MaxConnections = 5
+	config.ConnTimeout = 10 * time.Second
+	config.IdleTimeout = 30 * time.Second
+
+	// 2. 创建热连接池
+	hotPool := utlsclient.NewUTLSHotConnPool(config)
+	defer hotPool.Close()
+
+	// 3. 获取连接（使用本地测试）
+	fmt.Println("\n1. 测试连接池基本功能...")
+
+	// 测试域名
+	targetHost := "httpbin.org"
+
+	// 获取连接
+	conn, err := hotPool.GetConnection(targetHost)
+	if err != nil {
+		log.Printf("获取连接失败: %v", err)
+		return
+	}
+
+	fmt.Printf("✅ 成功获取连接: %s -> %s\n", conn.TargetHost(), conn.TargetIP())
+	fmt.Printf("   - 连接健康状态: %v\n", conn.IsHealthy())
+	fmt.Printf("   - TLS指纹: %v\n", conn.Fingerprint().HelloID)
+
+	// 4. 创建UTLSClient
+	client := utlsclient.NewUTLSClient(conn)
+	client.SetTimeout(10 * time.Second)
+
+	// 5. 测试HTTP请求
+	fmt.Println("\n2. 测试HTTP请求...")
+	testURL := "https://httpbin.org/get"
+
+	resp, err := client.Get(testURL)
+	if err != nil {
+		log.Printf("HTTP GET请求失败: %v", err)
+	} else {
+		fmt.Printf("✅ HTTP响应状态: %s\n", resp.Status)
+		fmt.Printf("   - Content-Type: %s\n", resp.Header.Get("Content-Type"))
+		resp.Body.Close()
+	}
+
+	// 6. 测试连接统计
+	stats := conn.Stats()
+	fmt.Printf("\n3. 连接统计信息:\n")
+	fmt.Printf("   - 目标主机: %s\n", stats.TargetHost)
+	fmt.Printf("   - 目标IP: %s\n", stats.TargetIP)
+	fmt.Printf("   - 请求次数: %d\n", stats.RequestCount)
+	fmt.Printf("   - 错误次数: %d\n", stats.ErrorCount)
+
+	// 7. 测试连接池统计
+	poolStats := hotPool.GetStats()
+	fmt.Printf("\n4. 连接池统计信息:\n")
+	fmt.Printf("   - 总连接数: %d\n", poolStats.TotalConnections)
+	fmt.Printf("   - 健康连接数: %d\n", poolStats.HealthyConnections)
+	fmt.Printf("   - 活跃连接数: %d\n", poolStats.ActiveConnections)
+
+	// 8. 归还连接
+	hotPool.PutConnection(conn)
+	fmt.Println("\n✅ 连接已归还到连接池")
+
+	// 9. 测试带路径验证的连接获取
+	fmt.Println("\n5. 测试带路径验证的连接获取...")
+	conn2, err := hotPool.GetConnectionWithValidation("https://httpbin.org/ip")
+	if err != nil {
+		log.Printf("获取带验证的连接失败: %v", err)
+	} else {
+		fmt.Printf("✅ 成功获取带验证的连接: %s -> %s\n", conn2.TargetHost(), conn2.TargetIP())
+
+		// 使用验证过的连接进行请求
+		client2 := utlsclient.NewUTLSClient(conn2)
+		resp2, err := client2.Get("https://httpbin.org/ip")
+		if err != nil {
+			log.Printf("使用验证连接请求失败: %v", err)
+		} else {
+			fmt.Printf("✅ 验证连接请求成功: %s\n", resp2.Status)
+			resp2.Body.Close()
+		}
+
+		hotPool.PutConnection(conn2)
+	}
+
+	fmt.Println("\n=== 测试完成 ===")
+}
