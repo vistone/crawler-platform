@@ -14,6 +14,9 @@ import (
 	"crawler-platform/utlsclient"
 )
 
+// Version 项目版本号
+const Version = "0.0.12"
+
 func main() {
 	// 命令行参数
 	url := flag.String("url", "", "目标 HTTPS URL，例如 https://example.com/path")
@@ -21,7 +24,13 @@ func main() {
 	ua := flag.String("ua", "", "自定义 User-Agent")
 	timeout := flag.Duration("timeout", 30*time.Second, "请求超时时间")
 	head := flag.Bool("head", false, "使用 HEAD 请求进行快速探测")
+	version := flag.Bool("version", false, "显示版本号")
 	flag.Parse()
+
+	if *version {
+		fmt.Printf("crawler-platform v%s\n", Version)
+		os.Exit(0)
+	}
 
 	if *url == "" {
 		fmt.Fprintln(os.Stderr, "必须提供 --url")
