@@ -15,9 +15,26 @@ const (
 	FolderConfigPath = "config/config.toml"
 )
 
+// GoogleEarthConfig Google Earth 相关配置
+type GoogleEarthConfig struct {
+	HostName       string `toml:"host_name"`
+	TMHostName     string `toml:"tm_host_name"`
+	BaseURL        string `toml:"base_url"`
+	TMBaseURL      string `toml:"tm_base_url"`
+	AuthEndpoint   string `toml:"auth_endpoint"`
+	DBRootEndpoint string `toml:"dbroot_endpoint"`
+}
+
+// Config 项目配置结构
+type Config struct {
+	GoogleEarth GoogleEarthConfig `toml:"GoogleEarth"`
+}
+
 var (
-	loadOnce sync.Once
-	loadErr  error
+	loadOnce     sync.Once
+	loadErr      error
+	globalConfig Config
+	configLoaded bool
 )
 
 // LoadMergedInto 将项目根目录下的 config.toml 与 config/config.toml 合并后，解码到 out 指针。
