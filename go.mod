@@ -12,6 +12,7 @@ require (
 
 require (
 	github.com/andybalholm/brotli v1.2.0 // indirect
+	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/klauspost/compress v1.18.1 // indirect
 	golang.org/x/crypto v0.44.0 // indirect
 	golang.org/x/mod v0.30.0 // indirect

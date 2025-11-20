@@ -1,0 +1,31 @@
+syntax = "proto2"; // 指定使用的Protocol Buffers语法版本为proto2
+
+package GoogleEarth; // 定义包名，用于避免命名冲突
+
+option go_package = ".;GoogleEarth"; // 指定Go语言的包名
+
+// EarthImageryPacket 地球影像数据包
+message EarthImageryPacket {
+    optional Codec image_type = 1 [default = JPEG]; // 图像类型，默认为JPEG
+    // Codec 编解码器枚举
+    enum Codec {
+        JPEG = 0; // JPEG格式
+        JPEG2000 = 1; // JPEG2000格式
+        DXT1 = 2; // DXT1压缩格式
+        DXT5 = 3; // DXT5压缩格式
+        PNG_RGBA = 4; // PNG RGBA格式
+    }
+    
+    optional bytes image_data = 2; // 图像数据
+    
+    optional SeparateAlphaType alpha_type = 3 [default = NONE]; // Alpha通道类型，默认为NONE
+    // SeparateAlphaType 独立Alpha通道类型枚举
+    enum SeparateAlphaType {
+        NONE = 0; // 无Alpha通道
+        PNG = 1; // PNG格式Alpha通道
+        JPEG_ALPHA = 2; // JPEG Alpha格式
+        RLE_1_BIT = 3; // RLE 1位Alpha通道
+    }
+    
+    optional bytes image_alpha = 4; // 图像Alpha通道数据
+}

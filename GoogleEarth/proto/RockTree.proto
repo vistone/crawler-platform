@@ -1,0 +1,337 @@
+syntax = "proto2"; // 指定使用的Protocol Buffers语法版本为proto2
+
+package GoogleEarth.RockTree; // 定义包名，用于避免命名冲突
+option go_package = ".;GoogleEarth"; // 指定Go语言的包名
+// TileKeyBounds 定义瓦片键值的边界范围
+message TileKeyBounds {
+  optional uint32 level = 1; // 瓦片层级
+  optional uint32 min_row = 2; // 最小行号
+  optional uint32 min_column = 3; // 最小列号
+  optional uint32 max_row = 4; // 最大行号
+  optional uint32 max_column = 5; // 最大列号
+}
+
+// KmlCoordinate KML坐标定义
+message KmlCoordinate {
+  optional double latitude = 1; // 纬度
+  optional double longitude = 2; // 经度
+  optional double altitude = 3; // 海拔高度
+}
+
+// ViewportMetadataRequest 视口元数据请求
+message ViewportMetadataRequest {
+  optional uint32 epoch = 1; // 时间戳
+  repeated TileKeyBounds tile_key_bounds = 2; // 瓦片键值边界列表
+  optional bool omit_ancestors = 3; // 是否忽略祖先节点
+
+  optional BulkMetadataResponseMode bulk_metadata_response_mode = 4; // 批量元数据响应模式
+  // BulkMetadataResponseMode 批量元数据响应模式枚举
+  enum BulkMetadataResponseMode {
+    NONE = 0; // 无响应模式
+    SPDY_PUSH = 1; // SPDY推送模式
+    IN_VIEWPORT_METADATA = 2; // 在视口元数据中
+  }
+
+  repeated KmlCoordinate terrain_elevation_coords = 5; // 地形高程坐标列表
+  optional uint32 bulk_metadata_spdy_push_priority = 6 [default = 7]; // 批量元数据SPDY推送优先级，默认值为7
+}
+
+// ViewportMetadata 视口元数据
+message ViewportMetadata {
+  optional PlanetoidMetadata planetoid_metadata = 1; // 行星体元数据
+  repeated NodeKey bulk_metadata_keys = 2; // 批量元数据键值列表
+  repeated KmlCoordinate terrain_elevation_coords = 3; // 地形高程坐标列表
+  repeated BulkMetadata bulk_metadata = 4; // 批量元数据列表
+}
+
+// BulkMetadataRequest 批量元数据请求
+message BulkMetadataRequest {
+  optional NodeKey node_key = 1; // 节点键值
+}
+
+// NodeDataRequest 节点数据请求
+message NodeDataRequest {
+  optional NodeKey node_key = 1; // 节点键值
+  optional Texture.Format texture_format = 2; // 纹理格式
+  optional uint32 imagery_epoch = 3; // 影像时间戳
+  optional bool omit_texture = 4; // 是否忽略纹理
+  optional int32 date = 5; // 日期
+  optional int32 milliseconds = 6; // 毫秒数
+  optional bool texture_is_shared = 7; // 纹理是否共享
+}
+
+// NodeKey 节点键值
+message NodeKey {
+  optional string path = 1; // 路径
+  optional uint32 epoch = 2; // 时间戳
+}
+// 对应 RockTreeTasks 结构体
+message RockTreeTasks {
+  optional NodeKey head_node_key = 1; // *NodeKey 头部节点键值
+  repeated NodeMetadataTasks node_metadata_tasks = 2; // []*NodeMetadataTasks 节点元数据任务列表
+  optional uint32 default_imagery_epoch = 3; // *uint32 默认影像时间戳
+  optional uint32 default_available_texture_formats = 4; // *uint32 默认可用纹理格式
+}
+// 对应 NodeMetadataTasks 结构体
+message NodeMetadataTasks {
+  optional uint32 path_and_flags = 1; // *uint32 路径和标志位
+  optional uint32 epoch = 2; // *uint32 时间戳
+  optional uint32 bulk_metadata_epoch = 3; // *uint32 批量元数据时间戳
+  optional uint32 imagery_epoch = 4; // *uint32 影像时间戳
+  optional uint32 available_texture_formats = 5; // *uint32 可用纹理格式
+}
+// CopyrightRequest 版权请求
+message CopyrightRequest {
+  optional uint32 epoch = 1; // 时间戳
+}
+
+// TextureDataRequest 纹理数据请求
+message TextureDataRequest {
+  optional NodeKey node_key = 1; // 节点键值
+  optional Texture.Format texture_format = 2; // 纹理格式
+  optional Texture.ViewDirection view_direction = 3; // 视图方向
+  optional uint32 imagery_epoch = 4; // 影像时间戳
+}
+
+// BulkMetadata 批量元数据
+message BulkMetadata {
+  // 节点元数据列表
+  repeated NodeMetadata node_metadata = 1;
+  // 头部节点键值
+  optional NodeKey head_node_key = 2;
+  // 头部节点中心坐标(x,y,z)
+  repeated double head_node_center = 3 [packed = true];
+  // 每个纹理像素对应的米数(用于LOD计算)
+  repeated float meters_per_texel = 4 [packed = true];
+  // 默认图像纪元(版本)
+  optional uint32 default_imagery_epoch = 5;
+  // 默认可用的纹理格式
+  optional uint32 default_available_texture_formats = 6;
+  // 默认可用的视图相关纹理
+  optional uint32 default_available_view_dependent_textures = 7;
+  // 默认可用的视图相关纹理格式
+  optional uint32 default_available_view_dependent_texture_formats = 8;
+  // 共享的日期节点列表
+  repeated DatedNode common_dated_nodes = 9;
+  // 默认采集日期范围
+  optional AcquisitionDateRange default_acquisition_date_range = 10;
+}
+
+// NodeMetadata 存储空间节点的元数据信息，包含几何属性、时间戳、纹理格式等关键参数
+message NodeMetadata {
+  // path_and_flags 路径标识组合字段：
+  // - 高24位表示路径长度（单位：字节）
+  // - 低8位为标志位（参考Flags枚举）
+  optional uint32 path_and_flags = 1;
+
+  // epoch 元数据版本时间戳（单位：秒，自Unix纪元）
+  optional uint32 epoch = 2;
+
+  // bulk_metadata_epoch 批量处理时的元数据时间戳
+  // 用于协调大规模数据更新操作
+  optional uint32 bulk_metadata_epoch = 5;
+
+  // oriented_bounding_box 定向包围盒数据
+  // 格式：[x_center, y_center, z_center, x_extent, y_extent, z_extent, rotation_matrix_3x3]
+  // 使用64位浮点数序列化
+  optional bytes oriented_bounding_box = 3;
+
+  // meters_per_texel 空间分辨率
+  // 表示每个纹理像素对应的实际地理尺寸（单位：米）
+  optional float meters_per_texel = 4;
+
+  // processing_oriented_bounding_box 处理专用包围盒
+  // 格式：[min_x, min_y, min_z, max_x, max_y, max_z]
+  // 使用WGS84坐标系存储双精度坐标
+  repeated double processing_oriented_bounding_box = 6 [packed = true];
+
+  // imagery_epoch 影像数据时间戳
+  // 当USE_IMAGERY_EPOCH标志置位时生效
+  optional uint32 imagery_epoch = 7;
+
+  // available_texture_formats 可用纹理格式掩码
+  // 按位表示支持的纹理格式（参考TextureFormat枚举）
+  optional uint32 available_texture_formats = 8;
+
+  // available_view_dependent_textures 视角相关纹理数量
+  // 表示支持的动态视角纹理实例数
+  optional uint32 available_view_dependent_textures = 9;
+
+  // available_view_dependent_texture_formats 视角相关纹理格式掩码
+  // 按位表示支持的视角相关纹理格式
+  optional uint32 available_view_dependent_texture_formats = 10;
+
+  // dated_nodes 时间关联子节点列表
+  // 每个条目对应特定时间点的子节点状态
+  repeated DatedNode dated_nodes = 11;
+
+  // acquisition_date_range 数据采集时间范围
+  // 用于标注该节点对应数据的采集时间段
+  optional AcquisitionDateRange acquisition_date_range = 12;
+
+  // Flags 元数据标志位定义
+  // 组合使用位掩码表示节点特性：
+  // RICH3D_LEAF - 富几何细节的叶子节点
+  // RICH3D_NODATA - 无效节点（保留结构但无数据）
+  // LEAF - 基础叶子节点标识
+  // NODATA - 无有效数据节点
+  // USE_IMAGERY_EPOCH - 使用独立影像时间戳
+  enum Flags {
+    RICH3D_LEAF = 1; // 富几何细节的叶子节点
+    RICH3D_NODATA = 2; // 无效节点（保留结构但无数据）
+    LEAF = 4; // 基础叶子节点标识
+    NODATA = 8; // 无有效数据节点
+    USE_IMAGERY_EPOCH = 16; // 使用独立影像时间戳
+  }
+}
+
+
+// DatedNode 带日期的节点
+message DatedNode {
+  optional uint32 date = 1; // 日期
+  optional uint32 milliseconds = 2; // 毫秒数
+  optional int32 epoch = 3; // 时间戳
+  optional int32 shared_epoch = 5; // 共享时间戳
+  optional int32 coarse_level = 4; // 粗略层级
+}
+
+// AcquisitionDate 采集日期
+message AcquisitionDate {
+  optional uint32 date = 1; // 日期
+  optional uint32 milliseconds = 2; // 毫秒数
+}
+
+// AcquisitionDateRange 采集日期范围
+message AcquisitionDateRange {
+  optional AcquisitionDate begin = 1; // 开始日期
+  optional AcquisitionDate end = 2; // 结束日期
+}
+
+// NodeData 节点数据
+message NodeData {
+  repeated double matrix_globe_from_mesh = 1 [packed = true]; // 从网格到地球的矩阵变换
+  repeated Mesh meshes = 2; // 网格列表
+  repeated uint32 copyright_ids = 3; // 版权ID列表
+  optional NodeKey node_key = 4; // 节点键值
+  repeated double kml_bounding_box = 5 [packed = true]; // KML边界框
+  optional Mesh water_mesh = 6; // 水面网格
+  repeated Mesh overlay_surface_meshes = 7; // 覆盖面网格列表
+  optional bytes normal_table = 8; // 法线表
+}
+
+// Mesh 网格
+message Mesh {
+  optional bytes vertices = 1; // 顶点数据
+  optional bytes vertex_alphas = 9; // 顶点透明度
+  optional bytes texture_coords = 2; // 纹理坐标
+  optional bytes indices = 3; // 索引数据
+  optional bytes octant_ranges = 4; // 八分体范围
+  optional bytes layer_counts = 5; // 图层计数
+  repeated Texture texture = 6; // 纹理列表
+  optional bytes texture_coordinates = 7; // 纹理坐标
+  repeated float uv_offset_and_scale = 10 [packed = true]; // UV偏移和缩放
+  optional bytes layer_and_octant_counts = 8; // 图层和八分体计数
+  optional bytes normals = 11; // 法线数据
+  optional bytes normals_dev = 16; // 法线偏差
+  optional uint32 mesh_id = 12; // 网格ID
+  optional bytes skirt_flags = 13; // 裙边标志
+
+  // Layer 图层枚举
+  enum Layer {
+    OVERGROUND = 0; // 地上层
+    TERRAIN_BELOW_WATER = 1; // 水下地形层
+    TERRAIN_ABOVE_WATER = 2; // 水上地形层
+    TERRAIN_HIDDEN = 3; // 隐藏地形层
+    WATER = 4; // 水层
+    WATER_SKIRTS = 5; // 水裙边
+    WATER_SKIRTS_INVERTED = 6; // 反向水裙边
+    OVERLAY_SURFACE = 7; // 覆盖面
+    OVERLAY_SURFACE_SKIRTS = 8; // 覆盖面裙边
+    NUM_LAYERS = 9; // 图层数量
+  }
+
+  // LayerMask 图层掩码枚举
+  enum LayerMask {
+    TERRAIN_WITH_OVERGROUND = 7; // 带地上层的地形
+    TERRAIN_WITH_WATER = 28; // 带水层的地形
+    TERRAIN_WITHOUT_WATER = 14; // 不带水层的地形
+    OVERLAY_WITH_SKIRTS = 384; // 带裙边的覆盖层
+    WATER_WITH_SKIRTS = 112; // 带裙边的水层
+  }
+}
+
+// Texture 纹理
+message Texture {
+  repeated bytes data = 1; // 纹理数据
+
+  optional Format format = 2; // 纹理格式
+  // Format 纹理格式枚举
+  enum Format {
+    JPG = 1; // JPG格式
+    DXT1 = 2; // DXT1压缩格式
+    ETC1 = 3; // ETC1压缩格式
+    PVRTC2 = 4; // PVRTC2压缩格式
+    PVRTC4 = 5; // PVRTC4压缩格式
+    CRN_DXT1 = 6; // CRN_DXT1压缩格式
+    HETC2 = 10; // HETC2压缩格式
+  }
+
+  optional uint32 width = 3 [default = 256]; // 纹理宽度，默认256像素
+  optional uint32 height = 4 [default = 256]; // 纹理高度，默认256像素
+
+  optional ViewDirection view_direction = 5; // 视图方向
+  // ViewDirection 视图方向枚举
+  enum ViewDirection {
+    ANY = 0; // 任意方向
+    NADIR = 1; // 天底方向
+    NORTH_45 = 2; // 北偏45度
+    EAST_45 = 3; // 东偏45度
+    SOUTH_45 = 4; // 南偏45度
+    WEST_45 = 5; // 西偏45度
+  }
+
+  optional uint32 mesh_id = 6; // 网格ID
+  optional QualityMeasurements measurement_data = 7; // 质量测量数据
+}
+
+// QualityMeasurements 质量测量
+message QualityMeasurements {
+  optional double psnr = 1; // 峰值信噪比
+}
+
+// TextureData 纹理数据
+message TextureData {
+  optional NodeKey node_key = 1; // 节点键值
+  repeated Texture textures = 2; // 纹理列表
+
+  repeated TransformInfo transform_info = 3; // 变换信息列表
+  // TransformInfo 变换信息
+  message TransformInfo {
+    optional bytes transform_table = 1; // 变换表
+    optional bytes vertex_transform_map = 2; // 顶点变换映射
+    optional uint32 mesh_id = 3; // 网格ID
+  }
+
+  repeated float projection_origin = 4 [packed = true]; // 投影原点
+}
+
+// Copyrights 版权信息集合
+message Copyrights {
+  repeated Copyright copyrights = 1; // 版权信息列表
+}
+
+// Copyright 版权信息
+message Copyright {
+  optional uint32 id = 1; // 版权ID
+  optional string text = 2; // 版权文本
+  optional string text_clean = 3; // 清理后的版权文本
+}
+
+// PlanetoidMetadata 行星体元数据
+message PlanetoidMetadata {
+  optional NodeMetadata root_node_metadata = 1; // 根节点元数据
+  optional float radius = 2; // 半径
+  optional float min_terrain_altitude = 3; // 最小地形高度
+  optional float max_terrain_altitude = 4; // 最大地形高度
+  optional uint32 max_imagery_epoch = 5; // 最大影像时间戳
+}

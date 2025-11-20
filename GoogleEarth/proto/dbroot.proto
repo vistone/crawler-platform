@@ -1,0 +1,548 @@
+syntax = "proto3"; // 指定使用的Protocol Buffers语法版本为proto3
+
+package GoogleEarth.dbroot; // 定义包名，用于避免命名冲突
+option go_package = ".;GoogleEarth"; // 指定Go语言的包名
+
+// StringEntryProto 字符串条目协议
+message StringEntryProto {
+    fixed32 string_id = 1; // 字符串ID
+    string string_value = 2; // 字符串值
+}
+
+// StringIdOrValueProto 字符串ID或值协议
+message StringIdOrValueProto {
+    optional fixed32 string_id = 1; // 字符串ID（可选）
+    optional string value = 2; // 字符串值（可选）
+}
+
+// PlanetModelProto 行星模型协议
+message PlanetModelProto {
+    optional double radius = 1; // 半径
+    optional double flattening = 2; // 扁率
+    optional double elevation_bias = 4; // 高程偏差
+    optional int32 negative_altitude_exponent_bias = 5; // 负高度指数偏差
+    optional double compressed_negative_altitude_threshold = 6; // 压缩负高度阈值
+}
+
+// ProviderInfoProto 提供商信息协议
+message ProviderInfoProto {
+    int32 provider_id = 1; // 提供商ID
+    optional StringIdOrValueProto copyright_string = 2; // 版权字符串
+    optional int32 vertical_pixel_offset = 3; // 垂直像素偏移
+}
+
+// PopUpProto 弹出窗口协议
+message PopUpProto {
+    optional bool is_balloon_style = 1; // 是否为气球样式
+    optional StringIdOrValueProto text = 2; // 文本内容
+    optional fixed32 background_color_abgr = 3; // 背景颜色（ABGR格式）
+    optional fixed32 text_color_abgr = 4; // 文本颜色（ABGR格式）
+}
+
+// StyleAttributeProto 样式属性协议
+message StyleAttributeProto {
+    string style_id = 1; // 样式ID
+    optional int32 provider_id = 3; // 提供商ID
+    optional fixed32 poly_color_abgr = 4; // 多边形颜色（ABGR格式）
+    optional fixed32 line_color_abgr = 5; // 线条颜色（ABGR格式）
+    optional float line_width = 6; // 线条宽度
+    optional fixed32 label_color_abgr = 7; // 标签颜色（ABGR格式）
+    optional float label_scale = 8; // 标签缩放比例
+    optional fixed32 placemark_icon_color_abgr = 9; // 地标图标颜色（ABGR格式）
+    optional float placemark_icon_scale = 10; // 地标图标缩放比例
+    optional StringIdOrValueProto placemark_icon_path = 11; // 地标图标路径
+    optional int32 placemark_icon_x = 12; // 地标图标X坐标
+    optional int32 placemark_icon_y = 13; // 地标图标Y坐标
+    optional int32 placemark_icon_width = 14; // 地标图标宽度
+    optional int32 placemark_icon_height = 15; // 地标图标高度
+    optional PopUpProto pop_up = 16; // 弹出窗口
+    repeated DrawFlagProto draw_flag = 17; // 绘制标志列表
+}
+
+// StyleMapProto 样式映射协议
+message StyleMapProto {
+    int32 style_map_id = 1; // 样式映射ID
+    repeated int32 channel_id = 2; // 通道ID列表
+    optional int32 normal_style_attribute = 3; // 普通样式属性
+    optional int32 highlight_style_attribute = 4; // 高亮样式属性
+}
+
+// ZoomRangeProto 缩放范围协议
+message ZoomRangeProto {
+    int32 min_zoom = 1; // 最小缩放级别
+    int32 max_zoom = 2; // 最大缩放级别
+}
+
+// DrawFlagProto 绘制标志协议
+message DrawFlagProto {
+    DrawFlagType draw_flag_type = 1; // 绘制标志类型
+    // DrawFlagType 绘制标志类型枚举
+    enum DrawFlagType {
+        TYPE_FILL_ONLY = 0; // 仅填充
+        TYPE_OUTLINE_ONLY = 1; // 仅轮廓
+        TYPE_FILL_AND_OUTLINE = 2; // 填充和轮廓
+        TYPE_ANTIALIASING = 3; // 抗锯齿
+        TYPE_CENTER_LABEL = 4; // 居中标签
+    }
+}
+
+// LayerProto 图层协议
+message LayerProto {
+    repeated ZoomRangeProto zoom_range = 1; // 缩放范围列表
+    optional int32 preserve_text_level = 2; // 保留文本级别
+    optional bool lod_begin_transition = 4; // LOD开始过渡
+    optional bool lod_end_transition = 5; // LOD结束过渡
+}
+
+// FolderProto 文件夹协议
+message FolderProto {
+    optional bool is_expandable = 1; // 是否可展开
+}
+
+// RequirementProto 要求协议
+message RequirementProto {
+    optional string required_vram = 3; // 所需显存
+    optional string required_client_ver = 4; // 所需客户端版本
+    optional string probability = 5; // 概率
+    optional string required_user_agent = 6; // 所需用户代理
+    optional string required_client_capabilities = 7; // 所需客户端功能
+}
+
+// LookAtProto 视角协议
+message LookAtProto {
+    float longitude = 1; // 经度
+    float latitude = 2; // 纬度
+    optional float range = 3; // 范围
+    optional float tilt = 4; // 倾斜角度
+    optional float heading = 5; // 方向角
+}
+
+// NestedFeatureProto 嵌套特征协议
+message NestedFeatureProto {
+    optional FeatureType feature_type = 1; // 特征类型
+    optional StringIdOrValueProto kml_url = 2; // KML URL
+    optional string database_url = 21; // 数据库URL
+    optional LayerProto layer = 3; // 图层
+    optional FolderProto folder = 4; // 文件夹
+    optional RequirementProto requirement = 5; // 要求
+    int32 channel_id = 6; // 通道ID
+    optional StringIdOrValueProto display_name = 7; // 显示名称
+    optional bool is_visible = 8; // 是否可见
+    optional bool is_enabled = 9; // 是否启用
+    optional bool is_checked = 10; // 是否选中
+    optional string layer_menu_icon_path = 11; // 图层菜单图标路径
+    optional StringIdOrValueProto description = 12; // 描述
+    optional LookAtProto look_at = 13; // 视角
+    optional string asset_uuid = 15; // 资产UUID
+    optional bool is_save_locked = 16; // 是否保存锁定
+    repeated NestedFeatureProto children = 17; // 子特征列表
+    optional string client_config_script_name = 18; // 客户端配置脚本名称
+    optional int32 diorama_data_channel_base = 19; // 全景数据通道基础
+    optional int32 replica_data_channel_base = 20; // 副本数据通道基础
+    // FeatureType 特征类型枚举
+    enum FeatureType {
+        TYPE_POINT_Z = 0; // Z轴点类型
+        TYPE_POLYGON_Z = 1; // Z轴多边形类型
+        TYPE_LINE_Z = 2; // Z轴线类型
+        TYPE_TERRAIN = 3; // 地形类型
+    }
+}
+
+// MfeDomainFeaturesProto MFE域特征协议
+message MfeDomainFeaturesProto {
+    string country_code = 1; // 国家代码
+    string domain_name = 2; // 域名
+    repeated SupportedFeature supported_features = 3; // 支持的特征列表
+    // SupportedFeature 支持的特征枚举
+    enum SupportedFeature {
+        GEOCODING = 0; // 地理编码
+        LOCAL_SEARCH = 1; // 本地搜索
+        DRIVING_DIRECTIONS = 2; // 驾驶路线
+    }
+}
+
+// ClientOptionsProto 客户端选项协议
+message ClientOptionsProto {
+    optional bool disable_disk_cache = 1; // 禁用磁盘缓存
+    optional bool disable_embedded_browser_vista = 2; // 禁用嵌入式浏览器Vista
+    optional bool draw_atmosphere = 3; // 绘制大气层
+    optional bool draw_stars = 4; // 绘制星星
+    optional string shader_file_prefix = 5; // 着色器文件前缀
+    optional bool use_protobuf_quadtree_packets = 6; // 使用Protocol Buffer四叉树数据包
+    optional bool use_extended_copyright_ids = 7; // 使用扩展版权ID
+    optional PrecipitationsOptions precipitations_options = 8; // 降水选项
+    optional CaptureOptions capture_options = 9; // 捕获选项
+    optional bool show_2d_maps_icon = 10; // 显示2D地图图标
+    optional bool disable_internal_browser = 11; // 禁用内部浏览器
+    optional string internal_browser_blacklist = 12; // 内部浏览器黑名单
+    optional string internal_browser_origin_whitelist = 13; // 内部浏览器源白名单
+    optional int32 polar_tile_merging_level = 14; // 极地瓦片合并级别
+    optional string js_bridge_request_whitelist = 15; // JS桥接请求白名单
+    optional MapsOptions maps_options = 16; // 地图选项
+    // PrecipitationsOptions 降水选项
+    message PrecipitationsOptions {
+        optional string image_url = 1; // 图像URL
+        optional int32 image_expire_time = 2; // 图像过期时间
+        optional int32 max_color_distance = 3; // 最大颜色距离
+        optional int32 image_level = 4; // 图像级别
+        repeated WeatherMapping weather_mapping = 5; // 天气映射列表
+        optional string clouds_layer_url = 6; // 云层URL
+        optional float animation_deceleration_delay = 7; // 动画减速延迟
+        // WeatherMapping 天气映射
+        message WeatherMapping {
+            uint32 color_abgr = 1; // 颜色（ABGR格式）
+            WeatherType weather_type = 2; // 天气类型
+            optional float elongation = 3; // 延伸
+            optional float opacity = 4; // 透明度
+            optional float fog_density = 5; // 雾密度
+            optional float speed0 = 6; // 速度0
+            optional float speed1 = 7; // 速度1
+            optional float speed2 = 8; // 速度2
+            optional float speed3 = 9; // 速度3
+            // WeatherType 天气类型枚举
+            enum WeatherType {
+                NO_PRECIPITATION = 0; // 无降水
+                RAIN = 1; // 雨
+                SNOW = 2; // 雪
+            }
+        }
+    }
+    // CaptureOptions 捕获选项
+    message CaptureOptions {
+        optional bool allow_save_as_image = 1; // 允许另存为图像
+        optional int32 max_free_capture_res = 2; // 最大免费捕获分辨率
+        optional int32 max_premium_capture_res = 3; // 最大高级捕获分辨率
+    }
+    // MapsOptions 地图选项
+    message MapsOptions {
+        optional bool enable_maps = 1; // 启用地图
+        optional bool docs_auto_download_enabled = 2; // 启用文档自动下载
+        optional int32 docs_auto_download_interval = 3; // 文档自动下载间隔
+        optional bool docs_auto_upload_enabled = 4; // 启用文档自动上传
+        optional int32 docs_auto_upload_delay = 5; // 文档自动上传延迟
+    }
+}
+
+// FetchingOptionsProto 获取选项协议
+message FetchingOptionsProto {
+    optional int32 max_requests_per_query = 1; // 每次查询最大请求数
+    optional bool force_max_requests_per_query = 12; // 强制每次查询最大请求数
+    optional bool sort_batches = 13; // 排序批次
+    optional int32 max_drawable = 2; // 最大可绘制对象数
+    optional int32 max_imagery = 3; // 最大影像数
+    optional int32 max_terrain = 4; // 最大地形数
+    optional int32 max_quadtree = 5; // 最大四叉树数
+    optional int32 max_diorama_metadata = 6; // 最大全景元数据数
+    optional int32 max_diorama_data = 7; // 最大全景数据数
+    optional float max_consumer_fetch_ratio = 8; // 最大消费者获取比例
+    optional float max_pro_ec_fetch_ratio = 9; // 最大专业版EC获取比例
+    optional float safe_overall_qps = 10; // 安全总体QPS
+    optional float safe_imagery_qps = 11; // 安全影像QPS
+    optional string domains_for_https = 14; // HTTPS域名
+    optional string hosts_for_http = 15; // HTTP主机
+}
+
+// TimeMachineOptionsProto 时光机选项协议
+message TimeMachineOptionsProto {
+    optional string server_url = 1; // 服务器URL
+    optional bool is_timemachine = 2; // 是否为时光机
+    optional int32 dwell_time_ms = 3; // 停留时间（毫秒）
+    optional int32 discoverability_altitude_meters = 4; // 可发现性高度（米）
+}
+
+// AutopiaOptionsProto Autopia选项协议
+message AutopiaOptionsProto {
+    optional string metadata_server_url = 1; // 元数据服务器URL
+    optional string depthmap_server_url = 2; // 深度图服务器URL
+    optional string coverage_overlay_url = 3; // 覆盖层URL
+    optional float max_imagery_qps = 4; // 最大影像QPS
+    optional float max_metadata_depthmap_qps = 5; // 最大元数据深度图QPS
+    optional string coverage_overlay_root_url = 6; // 覆盖层根URL
+    optional string coverage_overlay_tile_template = 7; // 覆盖层瓦片模板
+    optional string geo_photo_service_singleimagesearch_url = 8; // 地理照片服务单图搜索URL
+    optional string geo_photo_service_getmetadata_url = 9; // 地理照片服务获取元数据URL
+    optional string alleycat_tile_template = 10; // Alleycat瓦片模板
+    optional string guessable_fife_tile_template = 11; // 可猜测的FIFE瓦片模板
+    optional string secure_fife_tile_template = 12; // 安全FIFE瓦片模板
+}
+
+// CSIOptionsProto CSI选项协议
+message CSIOptionsProto {
+    optional int32 sampling_percentage = 1; // 采样百分比
+    optional string experiment_id = 2; // 实验ID
+}
+
+// SearchTabProto 搜索标签协议
+message SearchTabProto {
+    bool is_visible = 1; // 是否可见
+    optional StringIdOrValueProto tab_label = 2; // 标签文本
+    optional string base_url = 3; // 基础URL
+    optional string viewport_prefix = 4; // 视口前缀
+    repeated InputBoxInfo input_box = 5; // 输入框信息列表
+    optional RequirementProto requirement = 6; // 要求
+    // InputBoxInfo 输入框信息
+    message InputBoxInfo {
+        StringIdOrValueProto label = 1; // 标签
+        string query_verb = 2; // 查询动词
+        optional string query_prepend = 3; // 查询前缀
+    }
+}
+
+// CobrandProto 联合品牌协议
+message CobrandProto {
+    string logo_url = 1; // 标志URL
+    optional Coord x_coord = 2; // X坐标
+    optional Coord y_coord = 3; // Y坐标
+    optional TiePoint tie_point = 4; // 锚点
+    optional double screen_size = 5; // 屏幕尺寸
+    // Coord 坐标
+    message Coord {
+        double value = 1; // 值
+        optional bool is_relative = 2; // 是否相对
+    }
+    // TiePoint 锚点枚举
+    enum TiePoint {
+        TOP_LEFT = 0; // 左上角
+        TOP_CENTER = 1; // 顶部居中
+        TOP_RIGHT = 2; // 右上角
+        MID_LEFT = 3; // 左侧居中
+        MID_CENTER = 4; // 中心
+        MID_RIGHT = 5; // 右侧居中
+        BOTTOM_LEFT = 6; // 左下角
+        BOTTOM_CENTER = 7; // 底部居中
+        BOTTOM_RIGHT = 8; // 右下角
+    }
+}
+
+// DatabaseDescriptionProto 数据库描述协议
+message DatabaseDescriptionProto {
+    optional StringIdOrValueProto database_name = 1; // 数据库名称
+    string database_url = 2; // 数据库URL
+}
+
+// ConfigScriptProto 配置脚本协议
+message ConfigScriptProto {
+    string script_name = 1; // 脚本名称
+    string script_data = 2; // 脚本数据
+}
+
+// SwoopParamsProto 俯冲参数协议
+message SwoopParamsProto {
+    optional double start_dist_in_meters = 1; // 起始距离（米）
+}
+
+// PostingServerProto 发布服务器协议
+message PostingServerProto {
+    optional StringIdOrValueProto name = 1; // 名称
+    optional StringIdOrValueProto base_url = 2; // 基础URL
+    optional StringIdOrValueProto post_wizard_path = 3; // 发布向导路径
+    optional StringIdOrValueProto file_submit_path = 4; // 文件提交路径
+}
+
+// PlanetaryDatabaseProto 行星数据库协议
+message PlanetaryDatabaseProto {
+    StringIdOrValueProto url = 1; // URL
+    StringIdOrValueProto name = 2; // 名称
+}
+
+// LogServerProto 日志服务器协议
+message LogServerProto {
+    optional StringIdOrValueProto url = 1; // URL
+    optional bool enable = 2; // 是否启用
+    optional int32 throttling_factor = 3; // 节流因子
+}
+
+// EndSnippetProto 结尾片段协议
+message EndSnippetProto {
+    optional PlanetModelProto model = 1; // 行星模型
+    optional StringIdOrValueProto auth_server_url = 2; // 认证服务器URL
+    optional bool disable_authentication = 3; // 禁用认证
+    repeated MfeDomainFeaturesProto mfe_domains = 4; // MFE域列表
+    optional string mfe_lang_param = 5; // MFE语言参数
+    optional string ads_url_patterns = 6; // 广告URL模式
+    optional StringIdOrValueProto reverse_geocoder_url = 7; // 反向地理编码器URL
+    optional int32 reverse_geocoder_protocol_version = 8; // 反向地理编码器协议版本
+    optional bool sky_database_is_available = 9; // 天空数据库是否可用
+    optional StringIdOrValueProto sky_database_url = 10; // 天空数据库URL
+    optional StringIdOrValueProto default_web_page_intl_url = 11; // 默认国际化网页URL
+    optional int32 num_start_up_tips = 12; // 启动提示数量
+    optional StringIdOrValueProto start_up_tips_url = 13; // 启动提示URL
+    optional int32 num_pro_start_up_tips = 51; // 专业版启动提示数量
+    optional StringIdOrValueProto pro_start_up_tips_url = 52; // 专业版启动提示URL
+    optional StringIdOrValueProto startup_tips_intl_url = 64; // 国际化启动提示URL
+    optional StringIdOrValueProto user_guide_intl_url = 14; // 国际化用户指南URL
+    optional StringIdOrValueProto support_center_intl_url = 15; // 国际化支持中心URL
+    optional StringIdOrValueProto business_listing_intl_url = 16; // 国际化商业列表URL
+    optional StringIdOrValueProto support_answer_intl_url = 17; // 国际化支持答案URL
+    optional StringIdOrValueProto support_topic_intl_url = 18; // 国际化支持主题URL
+    optional StringIdOrValueProto support_request_intl_url = 19; // 国际化支持请求URL
+    optional StringIdOrValueProto earth_intl_url = 20; // 国际化地球URL
+    optional StringIdOrValueProto add_content_url = 21; // 添加内容URL
+    optional StringIdOrValueProto sketchup_not_installed_url = 22; // SketchUp未安装URL
+    optional StringIdOrValueProto sketchup_error_url = 23; // SketchUp错误URL
+    optional StringIdOrValueProto free_license_url = 24; // 免费许可证URL
+    optional StringIdOrValueProto pro_license_url = 25; // 专业版许可证URL
+    optional StringIdOrValueProto tutorial_url = 48; // 教程URL
+    optional StringIdOrValueProto keyboard_shortcuts_url = 49; // 键盘快捷键URL
+    optional StringIdOrValueProto release_notes_url = 50; // 发布说明URL
+    optional bool hide_user_data = 26; // 隐藏用户数据
+    optional bool use_ge_logo = 27; // 使用GE标志
+    optional StringIdOrValueProto diorama_description_url_base = 28; // 全景描述URL基础
+    optional uint32 diorama_default_color = 29; // 全景默认颜色
+    optional StringIdOrValueProto diorama_blacklist_url = 53; // 全景黑名单URL
+    optional ClientOptionsProto client_options = 30; // 客户端选项
+    optional FetchingOptionsProto fetching_options = 31; // 获取选项
+    optional TimeMachineOptionsProto time_machine_options = 32; // 时光机选项
+    optional CSIOptionsProto csi_options = 33; // CSI选项
+    repeated SearchTabProto search_tab = 34; // 搜索标签列表
+    repeated CobrandProto cobrand_info = 35; // 联合品牌信息列表
+    repeated DatabaseDescriptionProto valid_database = 36; // 有效数据库列表
+    repeated ConfigScriptProto config_script = 37; // 配置脚本列表
+    optional StringIdOrValueProto deauth_server_url = 38; // 取消认证服务器URL
+    optional SwoopParamsProto swoop_parameters = 39; // 俯冲参数
+    optional PostingServerProto bbs_server_info = 40; // 论坛服务器信息
+    optional PostingServerProto data_error_server_info = 41; // 数据错误服务器信息
+    repeated PlanetaryDatabaseProto planetary_database = 42; // 行星数据库列表
+    optional LogServerProto log_server = 43; // 日志服务器
+    optional AutopiaOptionsProto autopia_options = 44; // Autopia选项
+    optional SearchConfigProto search_config = 54; // 搜索配置
+    optional SearchInfoProto search_info = 45; // 搜索信息
+    optional string elevation_service_base_url = 46; // 高程服务基础URL
+    optional int32 elevation_profile_query_delay = 47; // 高程剖面查询延迟
+    optional StringIdOrValueProto pro_upgrade_url = 55; // 专业版升级URL
+    optional StringIdOrValueProto earth_community_url = 56; // 地球社区URL
+    optional StringIdOrValueProto google_maps_url = 57; // Google地图URL
+    optional StringIdOrValueProto sharing_url = 58; // 分享URL
+    optional StringIdOrValueProto privacy_policy_url = 59; // 隐私政策URL
+    optional bool do_gplus_user_check = 60; // 进行G+用户检查
+    optional RockTreeDataProto rocktree_data_proto = 61; // RockTree数据协议
+    repeated FilmstripConfigProto filmstrip_config = 62; // 胶片条配置列表
+    optional bool show_signin_button = 63; // 显示登录按钮
+    optional StringIdOrValueProto pro_measure_upsell_url = 65; // 专业版测量升级URL
+    optional StringIdOrValueProto pro_print_upsell_url = 66; // 专业版打印升级URL
+    optional StarDataProto star_data_proto = 67; // 星星数据协议
+    optional StringIdOrValueProto feedback_url = 68; // 反馈URL
+    optional StringIdOrValueProto oauth2_login_url = 69; // OAuth2登录URL
+    optional StringIdOrValueProto new_earth_url_template = 70; // 新地球URL模板
+    optional StringIdOrValueProto about_dialog_extra = 71; // 关于对话框额外信息
+    // SearchConfigProto 搜索配置协议
+    message SearchConfigProto {
+        repeated SearchServer search_server = 1; // 搜索服务器列表
+        repeated OneboxServiceProto onebox_service = 2; // 一键服务列表
+        optional StringIdOrValueProto kml_search_url = 3; // KML搜索URL
+        optional StringIdOrValueProto kml_render_url = 4; // KML渲染URL
+        optional StringIdOrValueProto search_history_url = 6; // 搜索历史URL
+        optional StringIdOrValueProto error_page_url = 5; // 错误页面URL
+        // SearchServer 搜索服务器
+        message SearchServer {
+            optional StringIdOrValueProto name = 1; // 名称
+            optional StringIdOrValueProto url = 2; // URL
+            optional ResultType type = 3; // 类型
+            optional StringIdOrValueProto html_transform_url = 4; // HTML转换URL
+            optional StringIdOrValueProto kml_transform_url = 5; // KML转换URL
+            optional SupplementalUi supplemental_ui = 6; // 补充UI
+            repeated StringIdOrValueProto suggestion = 9; // 建议列表
+            repeated SearchletProto searchlet = 7; // 搜索小程序列表
+            optional RequirementProto requirements = 8; // 要求
+            optional StringIdOrValueProto suggest_server = 10; // 建议服务器
+            // SupplementalUi 补充UI
+            message SupplementalUi {
+                optional StringIdOrValueProto url = 1; // URL
+                optional StringIdOrValueProto label = 2; // 标签
+                optional int32 height = 3; // 高度
+            }
+            // SearchletProto 搜索小程序协议
+            message SearchletProto {
+                optional StringIdOrValueProto url = 1; // URL
+                optional StringIdOrValueProto name = 2; // 名称
+                optional RequirementProto requirements = 3; // 要求
+            }
+            // ResultType 结果类型枚举
+            enum ResultType {
+                RESULT_TYPE_KML = 0; // KML结果类型
+                RESULT_TYPE_XML = 1; // XML结果类型
+            }
+        }
+        // OneboxServiceProto 一键服务协议
+        message OneboxServiceProto {
+            optional StringIdOrValueProto service_url = 1; // 服务URL
+            optional RequirementProto requirements = 2; // 要求
+        }
+    }
+    // SearchInfoProto 搜索信息协议
+    message SearchInfoProto {
+        optional string default_url = 1; // 默认URL
+        optional string geocode_param = 2; // 地理编码参数
+    }
+    // RockTreeDataProto RockTree数据协议
+    message RockTreeDataProto {
+        optional StringIdOrValueProto url = 1; // URL
+    }
+    // FilmstripConfigProto 胶片条配置协议
+    message FilmstripConfigProto {
+        optional RequirementProto requirements = 1; // 要求
+        optional StringIdOrValueProto alleycat_url_template = 2; // Alleycat URL模板
+        optional StringIdOrValueProto fallback_alleycat_url_template = 9; // 备用Alleycat URL模板
+        optional StringIdOrValueProto metadata_url_template = 3; // 元数据URL模板
+        optional StringIdOrValueProto thumbnail_url_template = 4; // 缩略图URL模板
+        optional StringIdOrValueProto kml_url_template = 5; // KML URL模板
+        optional StringIdOrValueProto featured_tours_url = 6; // 特色游览URL
+        optional bool enable_viewport_fallback = 7; // 启用视口回退
+        optional uint32 viewport_fallback_distance = 8; // 视口回退距离
+        repeated AlleycatImageryTypeProto imagery_type = 10; // 影像类型列表
+        // AlleycatImageryTypeProto Alleycat影像类型协议
+        message AlleycatImageryTypeProto {
+            optional int32 imagery_type_id = 1; // 影像类型ID
+            optional string imagery_type_label = 2; // 影像类型标签
+            optional StringIdOrValueProto metadata_url_template = 3; // 元数据URL模板
+            optional StringIdOrValueProto thumbnail_url_template = 4; // 缩略图URL模板
+            optional StringIdOrValueProto kml_url_template = 5; // KML URL模板
+        }
+    }
+    // StarDataProto 星星数据协议
+    message StarDataProto {
+        optional StringIdOrValueProto url = 1; // URL
+    }
+}
+
+// DbRootRefProto 数据库根引用协议
+message DbRootRefProto {
+    string url = 2; // URL
+    optional bool is_critical = 1; // 是否关键
+    optional RequirementProto requirements = 3; // 要求
+}
+
+// DatabaseVersionProto 数据库版本协议
+message DatabaseVersionProto {
+    uint32 quadtree_version = 1; // 四叉树版本
+}
+
+// DbRootProto 数据库根协议
+message DbRootProto {
+    optional StringIdOrValueProto database_name = 15; // 数据库名称
+    optional bool imagery_present = 1; // 是否存在影像
+    optional bool proto_imagery = 14; // 是否为协议影像
+    optional bool terrain_present = 2; // 是否存在地形
+    repeated ProviderInfoProto provider_info = 3; // 提供商信息列表
+    repeated NestedFeatureProto nested_feature = 4; // 嵌套特征列表
+    repeated StyleAttributeProto style_attribute = 5; // 样式属性列表
+    repeated StyleMapProto style_map = 6; // 样式映射列表
+    optional EndSnippetProto end_snippet = 7; // 结尾片段
+    repeated StringEntryProto translation_entry = 8; // 翻译条目列表
+    optional string language = 9; // 语言
+    optional int32 version = 10; // 版本
+    repeated DbRootRefProto dbroot_reference = 11; // 数据库根引用列表
+    optional DatabaseVersionProto database_version = 13; // 数据库版本
+    optional int32 refresh_timeout = 16; // 刷新超时时间
+}
+
+// EncryptedDbRootProto 加密数据库根协议
+message EncryptedDbRootProto {
+    optional EncryptionType encryption_type = 1; // 加密类型
+    optional bytes encryption_data = 2; // 加密数据
+    optional bytes dbroot_data = 3; // 数据库根数据
+    // EncryptionType 加密类型枚举
+    enum EncryptionType {
+        ENCRYPTION_XOR = 0; // XOR加密
+    }
+}

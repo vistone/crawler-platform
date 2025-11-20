@@ -1,0 +1,43 @@
+syntax = "proto2"; // 指定使用的Protocol Buffers语法版本为proto2
+
+package GoogleEarth.Terrain; // 定义包名，用于避免命名冲突
+option go_package = ".;GoogleEarth"; // 指定Go语言的包名
+
+// WaterSurfaceTileProto 水面瓦片协议
+message WaterSurfaceTileProto {
+    optional TileType tile_type = 1 [default = ALL_LAND]; // 瓦片类型，默认为全部陆地
+    // TileType 瓦片类型枚举
+    enum TileType {
+        ALL_LAND = 1; // 全部陆地
+        ALL_WATER = 2; // 全部水域
+        COAST = 3; // 海岸线
+    }
+    
+    // Mesh 网格组
+    repeated group Mesh = 2 {
+        optional sint32 altitude_cm = 3; // 高度（厘米）
+        optional bytes x = 4; // X坐标数据
+        optional bytes y = 5; // Y坐标数据
+        optional bytes alpha = 6; // Alpha通道数据
+        repeated int32 triangle_vertices = 7; // 三角形顶点列表
+        
+        // Strips 条带组
+        repeated group Strips = 8 {
+            repeated int32 vertices = 9; // 顶点列表
+        }
+        
+        // AdditionalEdgePoints 额外边缘点组
+        repeated group AdditionalEdgePoints = 10 {
+            optional bytes coordinate = 11; // 坐标数据
+            optional bytes alpha = 12; // Alpha通道数据
+        }
+    }
+    
+    optional bytes terrain_vertex_is_underwater = 13; // 地形顶点是否在水下
+}
+
+// TerrainPacketExtraDataProto 地形数据包额外数据协议
+message TerrainPacketExtraDataProto {
+    repeated WaterSurfaceTileProto water_tile_quads = 1; // 水面瓦片四边形列表
+    optional bytes original_terrain_packet = 100; // 原始地形数据包
+}

@@ -1,0 +1,78 @@
+syntax = "proto2"; // 指定使用的Protocol Buffers语法版本为proto2
+
+package GoogleEarth.Q2; // 定义包名，用于避免命名冲突
+option go_package = ".;GoogleEarth"; // 指定Go语言的包名
+
+// QuadtreeChannel 四叉树通道
+message QuadtreeChannel {
+    required int32 type = 1; // 类型
+    required int32 channel_epoch = 2; // 通道时间戳
+}
+
+// QuadtreeImageryTimedTile 四叉树影像定时瓦片
+message QuadtreeImageryTimedTile {
+    required int32 milliseconds = 1; // 毫秒数
+    required int32 timed_tile_epoch = 2; // 定时瓦片时间戳
+    optional int32 provider = 3; // 提供商
+}
+
+// QuadtreeImageryDatedTile 四叉树影像日期瓦片
+message QuadtreeImageryDatedTile {
+    required int32 date = 1; // 日期
+    required int32 dated_tile_epoch = 2; // 日期瓦片时间戳
+    required int32 provider = 3; // 提供商
+    repeated QuadtreeImageryTimedTile timed_tiles = 4; // 定时瓦片列表
+}
+
+// QuadtreeImageryDates 四叉树影像日期
+message QuadtreeImageryDates {
+    repeated QuadtreeImageryDatedTile dated_tile = 1; // 日期瓦片列表
+    optional int32 shared_tile_date = 2; // 共享瓦片日期
+    repeated int32 coarse_tile_dates = 3; // 粗瓦片日期列表
+    optional int32 shared_tile_milliseconds = 4; // 共享瓦片毫秒数
+}
+
+// QuadtreeLayer 四叉树图层
+message QuadtreeLayer {
+    required LayerType type = 1; // 类型
+    // LayerType 图层类型枚举
+    enum LayerType {
+        LAYER_TYPE_IMAGERY = 0; // 影像图层
+        LAYER_TYPE_TERRAIN = 1; // 地形图层
+        LAYER_TYPE_VECTOR = 2; // 矢量图层
+        LAYER_TYPE_IMAGERY_HISTORY = 3; // 影像历史图层
+    }
+    
+    required int32 layer_epoch = 2; // 图层时间戳
+    optional int32 provider = 3; // 提供商
+    optional QuadtreeImageryDates dates_layer = 4; // 日期图层
+}
+
+// QuadtreeNode 四叉树节点
+message QuadtreeNode {
+    optional int32 flags = 1; // 标志位
+    optional int32 cache_node_epoch = 2; // 缓存节点时间戳
+    repeated QuadtreeLayer layer = 3; // 图层列表
+    repeated QuadtreeChannel channel = 4; // 通道列表
+    
+    // NodeFlags 节点标志枚举
+    enum NodeFlags {
+        option allow_alias = true; // 允许别名
+        NODE_FLAGS_CHILD_COUNT = 4; // 节点标志子节点计数
+        NODE_FLAGS_CACHE_BIT = 4; // 节点标志缓存位
+        NODE_FLAGS_DRAWABLE_BIT = 5; // 节点标志可绘制位
+        NODE_FLAGS_IMAGE_BIT = 6; // 节点标志图像位
+        NODE_FLAGS_TERRAIN_BIT = 7; // 节点标志地形位
+    }
+}
+
+// QuadtreePacket 四叉树数据包
+message QuadtreePacket {
+    required int32 packet_epoch = 1; // 数据包时间戳
+    
+    // SparseQuadtreeNode 稀疏四叉树节点组
+    repeated group SparseQuadtreeNode = 2 {
+        required int32 index = 3; // 索引
+        required QuadtreeNode Node = 4; // 节点
+    }
+}

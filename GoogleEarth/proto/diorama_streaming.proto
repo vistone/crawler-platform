@@ -1,0 +1,113 @@
+syntax = "proto2"; // 指定使用的Protocol Buffers语法版本为proto2
+
+package GoogleEarth; // 定义包名，用于避免命名冲突
+
+option go_package = ".;GoogleEarth"; // 指定Go语言的包名
+
+// DioramaMetadata 全景元数据
+message DioramaMetadata {
+    optional int32 max_absolute_altitude = 14; // 最大绝对高度
+    optional int32 max_relative_altitude = 15; // 最大相对高度
+    optional int32 provider_id = 19; // 提供商ID
+    
+    // Object 对象组
+    repeated group Object = 16 {
+        optional int32 flags = 1; // 标志位
+        optional int32 lod_parent = 2; // LOD父节点
+        optional fixed64 lod_parent_tile = 18; // LOD父节点瓦片
+        optional int32 id_at_source = 3; // 源ID
+        optional int32 offset_to_source = 4; // 源偏移量
+        optional fixed64 absolute_source = 5; // 绝对源
+    }
+    
+    // DataPacket 数据包组
+    repeated group DataPacket = 17 {
+        optional int32 num_objects = 8; // 对象数量
+        required int32 max_altitude = 9; // 最大高度
+        optional int32 min_altitude = 10; // 最小高度
+        required int32 version = 11; // 版本
+        optional int32 max_absolute_altitude = 12; // 最大绝对高度
+        optional int32 min_absolute_altitude = 13; // 最小绝对高度
+    }
+    
+    // ObjectFlags 对象标志枚举
+    enum ObjectFlags {
+        option allow_alias = true; // 允许别名
+        IS_GEOMETRY = 4; // 是否为几何体
+        NORTH = 0; // 北向
+        SOUTH = 1; // 南向
+        EAST = 2; // 东向
+        WEST = 3; // 西向
+        OWNER_DIRECTION_MASK = 3; // 所有者方向掩码
+        IS_GROUP = 8; // 是否为组
+        LOD_PARENT_HERE = 16; // LOD父节点在此处
+        IS_INSTANCE = 32; // 是否为实例
+    }
+}
+
+// DioramaQuadset 全景四叉集
+message DioramaQuadset {
+    repeated DioramaMetadata metadata = 25; // 元数据列表
+    required bytes tree_bits = 26; // 树位数据
+}
+
+// DioramaDataPacket 全景数据包
+message DioramaDataPacket {
+    // Objects 对象组
+    repeated group Objects = 16 {
+        required bytes data = 1; // 数据
+        required Codec codec = 2; // 编解码器
+        optional int32 provider_id = 3; // 提供商ID
+        repeated float texture_sub_window = 4; // 纹理子窗口
+        optional int32 rotate_90_ccw_in_lod_parent = 8; // 在LOD父节点中逆时针旋转90度
+        optional ClampMode texture_clamp_mode = 5; // 纹理钳位模式
+        optional bytes bounding_box = 6; // 边界框
+        repeated int32 use_texture_object_id = 7; // 使用的纹理对象ID列表
+        repeated fixed64 lod_child_tile = 21; // LOD子节点瓦片列表
+        optional double relative_altitude_anchor_lat = 9; // 相对高度锚点纬度
+        optional double relative_altitude_anchor_lng = 10; // 相对高度锚点经度
+        optional float relative_altitude_anchor_elevation = 19; // 相对高度锚点高程
+        optional AltitudeMode altitude_mode = 18; // 高度模式
+        optional string description_id = 11; // 描述ID
+        optional bool building_has_info_bubble = 20 [default = true]; // 建筑是否有信息气泡，默认为true
+        optional fixed64 previous_chunk_path = 12; // 上一个块路径
+        optional int32 previous_chunk_channel = 13; // 上一个块通道
+        optional int32 previous_chunk_object = 14; // 上一个块对象
+        optional int32 reduce_resolution_levels = 15; // 降低分辨率级别
+        optional bytes concatenated_data = 16; // 连接数据
+        optional bool has_next_chunk = 17; // 是否有下一个块
+    }
+    
+    // Codec 编解码器枚举
+    enum Codec {
+        NO_CODEC = 0; // 无编解码器
+        JPEG = 1; // JPEG格式
+        PNG = 2; // PNG格式
+        DXT = 3; // DXT压缩格式
+        JP2 = 4; // JP2格式
+        HARDWARE_COMPRESSED_IMAGE = 5; // 硬件压缩图像
+        DIO_GEOMETRY = 101; // DIO几何体
+        BUILDING_Z = 102; // 建筑Z
+        DIO_ANIMATED_GEOMETRY = 103; // DIO动画几何体
+    }
+    
+    // ClampMode 钳位模式枚举
+    enum ClampMode {
+        CLAMP_S_CLAMP_T = 1; // S方向钳位，T方向钳位
+        CLAMP_S_WRAP_T = 2; // S方向钳位，T方向环绕
+        WRAP_S_CLAMP_T = 3; // S方向环绕，T方向钳位
+        WRAP_S_WRAP_T = 4; // S方向环绕，T方向环绕
+    }
+    
+    // AltitudeMode 高度模式枚举
+    enum AltitudeMode {
+        RELATIVE_TO_SURFACE = 0; // 相对于表面
+        RELATIVE_TO_SEA_FLOOR = 1; // 相对于海底
+        ABSOLUTE_ALTITUDE = 2; // 绝对高度
+    }
+}
+
+// DioramaBlacklist 全景黑名单
+message DioramaBlacklist {
+    repeated string building_id = 1; // 建筑ID列表
+}
