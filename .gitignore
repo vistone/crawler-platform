@@ -42,5 +42,3 @@ bin/
 
 # Config files with sensitive data (if any)
 # config.toml  # 如果包含敏感信息，取消注释此行
-
-.qoder/
