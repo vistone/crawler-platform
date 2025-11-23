@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>爬虫任务管理系统 - Crawler Task Manager</title>
+    <meta name="description" content="高性能爬虫任务管理与调度平台，支持任务创建、监控、调度和可视化管理">
+    <link rel="stylesheet" href="index.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- 侧边栏导航 -->
+    <nav class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <div class="logo">
+                <svg class="logo-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2 17L12 22L22 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span class="logo-text">Crawler Manager</span>
+            </div>
+        </div>
+        
+        <ul class="nav-menu">
+            <li class="nav-item active" data-page="dashboard">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="3" y="3" width="7" height="7" rx="1" stroke="currentColor" stroke-width="2"/>
+                    <rect x="14" y="3" width="7" height="7" rx="1" stroke="currentColor" stroke-width="2"/>
+                    <rect x="14" y="14" width="7" height="7" rx="1" stroke="currentColor" stroke-width="2"/>
+                    <rect x="3" y="14" width="7" height="7" rx="1" stroke="currentColor" stroke-width="2"/>
+                </svg>
+                <span>仪表板</span>
+            </li>
+            <li class="nav-item" data-page="tasks">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M9 11L12 14L22 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M21 12V19C21 20.1046 20.1046 21 19 21H5C3.89543 21 3 20.1046 3 19V5C3 3.89543 3.89543 3 5 3H16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span>任务管理</span>
+            </li>
+            <li class="nav-item" data-page="monitor">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M3 3V16C3 17.1046 3.89543 18 5 18H16M21 21L16 16M16 7V16H7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span>实时监控</span>
+            </li>
+            <li class="nav-item" data-page="logs">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M14 2H6C4.89543 2 4 2.89543 4 4V20C4 21.1046 4.89543 22 6 22H18C19.1046 22 20 21.1046 20 20V8L14 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M14 2V8H20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M8 13H16M8 17H16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span>执行日志</span>
+            </li>
+            <li class="nav-item" data-page="settings">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/>
+                    <path d="M12 1V3M12 21V23M4.22 4.22L5.64 5.64M18.36 18.36L19.78 19.78M1 12H3M21 12H23M4.22 19.78L5.64 18.36M18.36 5.64L19.78 4.22" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+                <span>系统设置</span>
+            </li>
+        </ul>
+        
+        <div class="sidebar-footer">
+            <div class="user-info">
+                <div class="user-avatar">A</div>
+                <div class="user-details">
+                    <div class="user-name">Admin</div>
+                    <div class="user-role">管理员</div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- 主内容区域 -->
+    <main class="main-content">
+        <!-- 顶部栏 -->
+        <header class="topbar">
+            <div class="topbar-left">
+                <button class="menu-toggle" id="menuToggle">
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M3 12H21M3 6H21M3 18H21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                </button>
+                <h1 class="page-title" id="pageTitle">仪表板</h1>
+            </div>
+            <div class="topbar-right">
+                <div class="search-box">
+                    <svg class="search-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2"/>
+                        <path d="M21 21L16.65 16.65" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                    <input type="text" placeholder="搜索任务..." class="search-input">
+                </div>
+                <button class="notification-btn">
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M18 8C18 6.4087 17.3679 4.88258 16.2426 3.75736C15.1174 2.63214 13.5913 2 12 2C10.4087 2 8.88258 2.63214 7.75736 3.75736C6.63214 4.88258 6 6.4087 6 8C6 15 3 17 3 17H21C21 17 18 15 18 8Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M13.73 21C13.5542 21.3031 13.3019 21.5547 12.9982 21.7295C12.6946 21.9044 12.3504 21.9965 12 21.9965C11.6496 21.9965 11.3054 21.9044 11.0018 21.7295C10.6982 21.5547 10.4458 21.3031 10.27 21" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <span class="notification-badge">3</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- 页面内容容器 -->
+        <div class="content-container">
+            <!-- 仪表板页面 -->
+            <div class="page-content active" id="dashboard-page">
+                <!-- 统计卡片 -->
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon stat-icon-primary">
+                            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M9 11L12 14L22 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                <path d="M21 12V19C21 20.1046 20.1046 21 19 21H5C3.89543 21 3 20.1046 3 19V5C3 3.89543 3.89543 3 5 3H16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </div>
+                        <div class="stat-content">
+                            <div class="stat-label">总任务数</div>
+                            <div class="stat-value">1,247</div>
+                            <div class="stat-change positive">
+                                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M12 19V5M5 12L12 5L19 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                                <span>12.5% 较上周</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-icon stat-icon-success">
+                            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M22 11.08V12C21.9988 14.1564 21.3005 16.2547 20.0093 17.9818C18.7182 19.709 16.9033 20.9725 14.8354 21.5839C12.7674 22.1953 10.5573 22.1219 8.53447 21.3746C6.51168 20.6273 4.78465 19.2461 3.61096 17.4371C2.43727 15.628 1.87979 13.4881 2.02168 11.3363C2.16356 9.18455 2.99721 7.13631 4.39828 5.49706C5.79935 3.85781 7.69279 2.71537 9.79619 2.24013C11.8996 1.7649 14.1003 1.98232 16.07 2.85999" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                <path d="M22 4L12 14.01L9 11.01" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </div>
+                        <div class="stat-content">
+                            <div class="stat-label">运行中</div>
+                            <div class="stat-value">156</div>
+                            <div class="stat-change positive">
+                                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M12 19V5M5 12L12 5L19 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                                <span>8.2% 较上周</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-icon stat-icon-warning">
+                            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
+                                <path d="M12 8V12M12 16H12.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                            </svg>
+                        </div>
+                        <div class="stat-content">
+                            <div class="stat-label">失败任务</div>
+                            <div class="stat-value">23</div>
+                            <div class="stat-change negative">
+                                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M12 5V19M19 12L12 19L5 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                                <span>3.1% 较上周</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-icon stat-icon-info">
+                            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M13 2L3 14H12L11 22L21 10H12L13 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </div>
+                        <div class="stat-content">
+                            <div class="stat-label">成功率</div>
+                            <div class="stat-value">98.2%</div>
+                            <div class="stat-change positive">
+                                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M12 19V5M5 12L12 5L19 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                                <span>1.3% 较上周</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 图表和任务列表 -->
+                <div class="dashboard-grid">
+                    <!-- 任务执行趋势图 -->
+                    <div class="card chart-card">
+                        <div class="card-header">
+                            <h2 class="card-title">任务执行趋势</h2>
+                            <div class="card-actions">
+                                <select class="time-range-select">
+                                    <option>最近7天</option>
+                                    <option>最近30天</option>
+                                    <option>最近90天</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <canvas id="taskTrendChart"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- 任务状态分布 -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">任务状态分布</h2>
+                        </div>
+                        <div class="card-body">
+                            <canvas id="taskStatusChart"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- 最近任务 -->
+                    <div class="card recent-tasks-card">
+                        <div class="card-header">
+                            <h2 class="card-title">最近任务</h2>
+                            <a href="#" class="view-all-link">查看全部</a>
+                        </div>
+                        <div class="card-body">
+                            <div class="task-list">
+                                <div class="task-item">
+                                    <div class="task-info">
+                                        <div class="task-name">Google Earth 数据采集</div>
+                                        <div class="task-meta">
+                                            <span class="task-time">2分钟前</span>
+                                            <span class="task-type">HTTP</span>
+                                        </div>
+                                    </div>
+                                    <span class="task-status status-running">运行中</span>
+                                </div>
+                                <div class="task-item">
+                                    <div class="task-info">
+                                        <div class="task-name">地形数据解析任务</div>
+                                        <div class="task-meta">
+                                            <span class="task-time">5分钟前</span>
+                                            <span class="task-type">Custom</span>
+                                        </div>
+                                    </div>
+                                    <span class="task-status status-completed">已完成</span>
+                                </div>
+                                <div class="task-item">
+                                    <div class="task-info">
+                                        <div class="task-name">四叉树数据爬取</div>
+                                        <div class="task-meta">
+                                            <span class="task-time">10分钟前</span>
+                                            <span class="task-type">Google Earth</span>
+                                        </div>
+                                    </div>
+                                    <span class="task-status status-completed">已完成</span>
+                                </div>
+                                <div class="task-item">
+                                    <div class="task-info">
+                                        <div class="task-name">批量URL采集</div>
+                                        <div class="task-meta">
+                                            <span class="task-time">15分钟前</span>
+                                            <span class="task-type">HTTP</span>
+                                        </div>
+                                    </div>
+                                    <span class="task-status status-failed">失败</span>
+                                </div>
+                                <div class="task-item">
+                                    <div class="task-info">
+                                        <div class="task-name">定时数据同步</div>
+                                        <div class="task-meta">
+                                            <span class="task-time">20分钟前</span>
+                                            <span class="task-type">HTTP</span>
+                                        </div>
+                                    </div>
+                                    <span class="task-status status-completed">已完成</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 系统资源监控 -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">系统资源</h2>
+                        </div>
+                        <div class="card-body">
+                            <div class="resource-monitor">
+                                <div class="resource-item">
+                                    <div class="resource-label">
+                                        <span>Worker 使用率</span>
+                                        <span class="resource-value">7/10</span>
+                                    </div>
+                                    <div class="progress-bar">
+                                        <div class="progress-fill" style="width: 70%"></div>
+                                    </div>
+                                </div>
+                                <div class="resource-item">
+                                    <div class="resource-label">
+                                        <span>连接池使用率</span>
+                                        <span class="resource-value">1245/1631</span>
+                                    </div>
+                                    <div class="progress-bar">
+                                        <div class="progress-fill" style="width: 76%"></div>
+                                    </div>
+                                </div>
+                                <div class="resource-item">
+                                    <div class="resource-label">
+                                        <span>队列长度</span>
+                                        <span class="resource-value">45/1000</span>
+                                    </div>
+                                    <div class="progress-bar">
+                                        <div class="progress-fill" style="width: 4.5%"></div>
+                                    </div>
+                                </div>
+                                <div class="resource-item">
+                                    <div class="resource-label">
+                                        <span>内存使用</span>
+                                        <span class="resource-value">2.3GB/8GB</span>
+                                    </div>
+                                    <div class="progress-bar">
+                                        <div class="progress-fill" style="width: 28.75%"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 任务管理页面 -->
+            <div class="page-content" id="tasks-page">
+                <div class="page-header">
+                    <button class="btn btn-primary" id="createTaskBtn">
+                        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                        创建任务
+                    </button>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="card-title">任务列表</h2>
+                        <div class="filter-group">
+                            <select class="filter-select">
+                                <option>全部状态</option>
+                                <option>运行中</option>
+                                <option>已完成</option>
+                                <option>失败</option>
+                                <option>等待中</option>
+                            </select>
+                            <select class="filter-select">
+                                <option>全部类型</option>
+                                <option>HTTP</option>
+                                <option>Google Earth</option>
+                                <option>Custom</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-container">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>任务名称</th>
+                                        <th>类型</th>
+                                        <th>状态</th>
+                                        <th>优先级</th>
+                                        <th>调度</th>
+                                        <th>最后执行</th>
+                                        <th>成功率</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="taskTableBody">
+                                    <!-- 任务数据将通过 JavaScript 动态填充 -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 监控页面 -->
+            <div class="page-content" id="monitor-page">
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="card-title">实时监控</h2>
+                    </div>
+                    <div class="card-body">
+                        <p class="placeholder-text">监控页面开发中...</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 日志页面 -->
+            <div class="page-content" id="logs-page">
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="card-title">执行日志</h2>
+                    </div>
+                    <div class="card-body">
+                        <p class="placeholder-text">日志页面开发中...</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 设置页面 -->
+            <div class="page-content" id="settings-page">
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="card-title">系统设置</h2>
+                    </div>
+                    <div class="card-body">
+                        <p class="placeholder-text">设置页面开发中...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- 创建任务模态框 -->
+    <div class="modal" id="createTaskModal">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title">创建新任务</h2>
+                <button class="modal-close" id="closeModalBtn">
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M18 6L6 18M6 6L18 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <form id="createTaskForm">
+                    <div class="form-group">
+                        <label for="taskName">任务名称</label>
+                        <input type="text" id="taskName" class="form-input" placeholder="输入任务名称" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="taskType">任务类型</label>
+                        <select id="taskType" class="form-input" required>
+                            <option value="">选择任务类型</option>
+                            <option value="http">HTTP 请求</option>
+                            <option value="google_earth">Google Earth 数据</option>
+                            <option value="custom">自定义任务</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="taskUrl">目标 URL</label>
+                        <input type="url" id="taskUrl" class="form-input" placeholder="https://example.com" required>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="taskPriority">优先级</label>
+                            <select id="taskPriority" class="form-input">
+                                <option value="1">低</option>
+                                <option value="5" selected>中</option>
+                                <option value="10">高</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="taskTimeout">超时时间 (秒)</label>
+                            <input type="number" id="taskTimeout" class="form-input" value="30" min="1">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="taskSchedule">调度类型</label>
+                        <select id="taskSchedule" class="form-input">
+                            <option value="once">一次性</option>
+                            <option value="cron">定时任务 (Cron)</option>
+                            <option value="interval">间隔执行</option>
+                        </select>
+                    </div>
+                    <div class="form-group" id="cronExpressionGroup" style="display: none;">
+                        <label for="cronExpression">Cron 表达式</label>
+                        <input type="text" id="cronExpression" class="form-input" placeholder="0 */5 * * * *">
+                        <small class="form-hint">示例: 0 */5 * * * * (每5分钟执行)</small>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="cancelTaskBtn">取消</button>
+                <button type="submit" form="createTaskForm" class="btn btn-primary">创建任务</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="index.js"></script>
+</body>
+</html>

@@ -148,7 +148,6 @@ Decoder->>Decoder : 检查前4字节魔数
 alt 是加密Zlib魔数
 Decoder->>Crypto : geDecrypt(data, key)
 Crypto-->>Decoder : 返回解密数据
-Decoder->>Decoder : 再次检查魔数
 end
 alt 是解密Zlib魔数
 Decoder->>Compress : zlib解压
