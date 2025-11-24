@@ -10,8 +10,10 @@ import (
 	"io"
 )
 
-// 解密函数与解压函数（迁移自 libge）
-func geDecrypt(data []byte, key []byte) {
+// GeDecrypt 解密函数（迁移自 libge）
+// data: 要解密的数据（会被原地修改）
+// key: 解密密钥（预期长度为 1024）
+func GeDecrypt(data []byte, key []byte) {
 	if len(data) == 0 || len(key) == 0 {
 		return
 	}
@@ -34,6 +36,11 @@ func geDecrypt(data []byte, key []byte) {
 			j %= 24
 		}
 	}
+}
+
+// geDecrypt 私有包装函数，保持向后兼容
+func geDecrypt(data []byte, key []byte) {
+	GeDecrypt(data, key)
 }
 
 // 解包（含可选解密）GE Zlib 数据：
