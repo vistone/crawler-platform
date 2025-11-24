@@ -15,7 +15,7 @@ import (
 )
 
 // Version 项目版本号
-const Version = "0.0.17"
+const Version = "0.0.18"
 
 func main() {
 	// 命令行参数
