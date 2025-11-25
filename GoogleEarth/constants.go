@@ -27,6 +27,7 @@ const (
 	QPQ2_PATH            = "/flatfile?db=%s&qp-%s-q.%d"    //带数据库名称的q2数据 第一个 %s 是tm，mars,moon,sky,第二个%s这里是tilekey，%d 是Epoch
 	IMAGERY_PATH         = "/flatfile?f1-%s-i.%d"          // 带数据库名称的imagery数据，%s是tilekey，%d是imageryEpoch
 	IMAGERY_WITH_TM_PATH = "/flatfile?db=tm&f1-%s-i.%d-%s" //历史卫星影像数据，%s是tilekey，%d是imageryEpoch，%s 日期
+	Terrain_PATH         = "/flatfile?f1c-%s-t.%d"         // 带数据库名称的terrain数据，%s是tilekey，%d是terrainEpoch
 )
 
 /*
