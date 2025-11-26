@@ -126,6 +126,11 @@ func (p QuadtreePath) pathBits() uint64 {
 	return p.path & pathMask
 }
 
+// PathBits 导出路径位（供测试使用）
+func (p QuadtreePath) PathBits() uint64 {
+	return p.pathBits()
+}
+
 // WhichChild 返回当前节点是父节点的第几个孩子（0-3）
 func (p QuadtreePath) WhichChild() uint32 {
 	level := p.Level()

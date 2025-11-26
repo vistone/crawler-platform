@@ -86,8 +86,8 @@ func bboltRecoverIfNeeded(dbPath string, opts *bolt.Options) (*bolt.DB, error) {
 	return bolt.Open(dbPath, 0o600, opts)
 }
 
-// compressTileKeyToUint64 将 tilekey 压缩为 64 位整数（高48位为路径位，低位为层级）
-func compressTileKeyToUint64(tilekey string) (uint64, error) {
+// CompressTileKeyToUint64 将 tilekey 压缩为 64 位整数（高48位为路径位，低位为层级）
+func CompressTileKeyToUint64(tilekey string) (uint64, error) {
 	lvl := len(tilekey)
 	if lvl <= 0 || lvl > 24 {
 		return 0, errors.New("长度应在1..24之间")
@@ -127,7 +127,7 @@ func PutTileBBolt(dbdir, dataType, tilekey string, value []byte) error {
 	}
 
 	// 压缩 tilekey 以获得唯一、紧凑的主键
-	tileID, err := compressTileKeyToUint64(tilekey)
+	tileID, err := CompressTileKeyToUint64(tilekey)
 	if err != nil {
 		return err
 	}
@@ -179,7 +179,7 @@ func PutTilesBBoltBatch(dbdir, dataType string, records map[string][]byte) error
 			}
 
 			for tilekey, value := range group {
-				tileID, err := compressTileKeyToUint64(tilekey)
+				tileID, err := CompressTileKeyToUint64(tilekey)
 				if err != nil {
 					return err
 				}
@@ -207,7 +207,7 @@ func GetTileBBolt(dbdir, dataType, tilekey string) ([]byte, error) {
 		return nil, err
 	}
 
-	tileID, err := compressTileKeyToUint64(tilekey)
+	tileID, err := CompressTileKeyToUint64(tilekey)
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +242,7 @@ func DeleteTileBBolt(dbdir, dataType, tilekey string) error {
 	if err != nil {
 		return err
 	}
-	tileID, err := compressTileKeyToUint64(tilekey)
+	tileID, err := CompressTileKeyToUint64(tilekey)
 	if err != nil {
 		return err
 	}
@@ -262,4 +262,3 @@ func DeleteTileBBolt(dbdir, dataType, tilekey string) error {
 func CloseAllBBolt() error {
 	return defaultBoltManager.CloseAll()
 }
-

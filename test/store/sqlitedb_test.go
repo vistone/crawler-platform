@@ -1,4 +1,4 @@
-package Store
+package Store_test
 
 import (
 	"math/rand"
@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"crawler-platform/Store"
 )
 
 // TestSQLitePutAndGet 测试 sqlite 写入与读取
@@ -29,13 +31,13 @@ func TestSQLitePutAndGet(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// 写入数据
-			err := PutTileSQLite(tmpDir, dataType, tc.tilekey, tc.value)
+			err := Store.PutTileSQLite(tmpDir, dataType, tc.tilekey, tc.value)
 			if err != nil {
 				t.Fatalf("写入失败: %v", err)
 			}
 
 			// 读取数据
-			got, err := GetTileSQLite(tmpDir, dataType, tc.tilekey)
+			got, err := Store.GetTileSQLite(tmpDir, dataType, tc.tilekey)
 			if err != nil {
 				t.Fatalf("读取失败: %v", err)
 			}
@@ -46,7 +48,7 @@ func TestSQLitePutAndGet(t *testing.T) {
 			}
 
 			// 打印生成的数据库路径（验证分层策略）
-			dbPath := getDBPath(tmpDir, dataType, tc.tilekey)
+			dbPath := Store.GetDBPath(tmpDir, dataType, tc.tilekey)
 			t.Logf("tilekey=%s (长度%d) -> 数据库路径: %s", tc.tilekey, len(tc.tilekey), dbPath)
 		})
 	}
@@ -60,12 +62,12 @@ func TestSQLiteUpsert(t *testing.T) {
 
 	// 第一次写入
 	value1 := []byte("original_value")
-	if err := PutTileSQLite(tmpDir, dataType, tilekey, value1); err != nil {
+	if err := Store.PutTileSQLite(tmpDir, dataType, tilekey, value1); err != nil {
 		t.Fatalf("第一次写入失败: %v", err)
 	}
 
 	// 读取验证
-	got1, err := GetTileSQLite(tmpDir, dataType, tilekey)
+	got1, err := Store.GetTileSQLite(tmpDir, dataType, tilekey)
 	if err != nil {
 		t.Fatalf("读取失败: %v", err)
 	}
@@ -75,12 +77,12 @@ func TestSQLiteUpsert(t *testing.T) {
 
 	// 第二次写入（更新）
 	value2 := []byte("updated_value")
-	if err := PutTileSQLite(tmpDir, dataType, tilekey, value2); err != nil {
+	if err := Store.PutTileSQLite(tmpDir, dataType, tilekey, value2); err != nil {
 		t.Fatalf("第二次写入失败: %v", err)
 	}
 
 	// 读取验证更新后的值
-	got2, err := GetTileSQLite(tmpDir, dataType, tilekey)
+	got2, err := Store.GetTileSQLite(tmpDir, dataType, tilekey)
 	if err != nil {
 		t.Fatalf("读取更新后数据失败: %v", err)
 	}
@@ -98,22 +100,22 @@ func TestSQLiteDelete(t *testing.T) {
 	value := []byte("delete_test_data")
 
 	// 先写入
-	if err := PutTileSQLite(tmpDir, dataType, tilekey, value); err != nil {
+	if err := Store.PutTileSQLite(tmpDir, dataType, tilekey, value); err != nil {
 		t.Fatalf("写入失败: %v", err)
 	}
 
 	// 验证存在
-	if _, err := GetTileSQLite(tmpDir, dataType, tilekey); err != nil {
+	if _, err := Store.GetTileSQLite(tmpDir, dataType, tilekey); err != nil {
 		t.Fatalf("读取失败: %v", err)
 	}
 
 	// 删除
-	if err := DeleteTileSQLite(tmpDir, dataType, tilekey); err != nil {
+	if err := Store.DeleteTileSQLite(tmpDir, dataType, tilekey); err != nil {
 		t.Fatalf("删除失败: %v", err)
 	}
 
 	// 验证已删除
-	if _, err := GetTileSQLite(tmpDir, dataType, tilekey); err == nil {
+	if _, err := Store.GetTileSQLite(tmpDir, dataType, tilekey); err == nil {
 		t.Error("期望删除后读取失败，但成功了")
 	}
 	t.Log("删除测试通过")
@@ -127,13 +129,13 @@ func TestSQLiteCorruptRecovery(t *testing.T) {
 
 	// 正常写入
 	originalValue := []byte("original_data")
-	if err := PutTileSQLite(tmpDir, dataType, tilekey, originalValue); err != nil {
+	if err := Store.PutTileSQLite(tmpDir, dataType, tilekey, originalValue); err != nil {
 		t.Fatalf("写入失败: %v", err)
 	}
 
 	// 获取数据库文件路径并关闭连接
-	dbPath := getDBPath(tmpDir, dataType, tilekey)
-	if err := CloseAllSQLite(); err != nil {
+	dbPath := Store.GetDBPath(tmpDir, dataType, tilekey)
+	if err := Store.CloseAllSQLite(); err != nil {
 		t.Fatalf("关闭连接失败: %v", err)
 	}
 
@@ -177,13 +179,13 @@ func TestSQLitePathStrategy(t *testing.T) {
 		tilekey      string
 		expectedPath string
 	}{
-		{"012", tmpDir + "/imagery/base.g3db"},           // 长度3: 基础层
-		{"01230123", tmpDir + "/imagery/base.g3db"},      // 长度8: 基础层
-		{"012301230", tmpDir + "/imagery/8/0123.g3db"},   // 长度9: 8/目录管理
-		{"012301230123", tmpDir + "/imagery/8/0123.g3db"}, // 长度12: 8/目录管理
-		{"0123012301230", tmpDir + "/imagery/12/0123.g3db"},   // 长度13: 12/目录管理
-		{"0123012301230123", tmpDir + "/imagery/12/0123.g3db"}, // 长度16: 12/目录管理
-		{"01230123012301230", tmpDir + "/imagery/17/0123.g3db"},    // 长度17: 独立目录
+		{"012", tmpDir + "/imagery/base.g3db"},                         // 长度3: 基础层
+		{"01230123", tmpDir + "/imagery/base.g3db"},                    // 长度8: 基础层
+		{"012301230", tmpDir + "/imagery/8/0123.g3db"},                 // 长度9: 8/目录管理
+		{"012301230123", tmpDir + "/imagery/8/0123.g3db"},              // 长度12: 8/目录管理
+		{"0123012301230", tmpDir + "/imagery/12/0123.g3db"},            // 长度13: 12/目录管理
+		{"0123012301230123", tmpDir + "/imagery/12/0123.g3db"},         // 长度16: 12/目录管理
+		{"01230123012301230", tmpDir + "/imagery/17/0123.g3db"},        // 长度17: 独立目录
 		{"012301230123012301230123", tmpDir + "/imagery/24/0123.g3db"}, // 长度24: 独立目录
 	}
 

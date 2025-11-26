@@ -1,9 +1,11 @@
-package Store
+package Store_test
 
 import (
 	"path"
 	"strings"
 	"testing"
+
+	"crawler-platform/Store"
 )
 
 // makeTileKey 生成指定长度的tilekey，前缀可控，后续补齐到目标长度
@@ -87,7 +89,7 @@ func TestGetDBPathShape(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			tilekey := makeTileKey(tc.prefix, tc.length)
-			got := getDBPath(dbdir, dataType, tilekey)
+			got := Store.GetDBPathForTest(dbdir, dataType, tilekey)
 			if got != tc.expected {
 				t.Errorf("unexpected path for length=%d, prefix=%s\n got: %s\nwant: %s", tc.length, tc.prefix, got, tc.expected)
 			}

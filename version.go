@@ -1,4 +1,4 @@
 package main
 
 // Version 项目版本号
-const Version = "0.0.22"
+const Version = "0.0.23"

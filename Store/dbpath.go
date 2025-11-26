@@ -38,7 +38,7 @@ func getDBPath(dbdir string, dataType string, tilekey string) string {
 		_ = os.MkdirAll(pathDir, 0o755)
 		// 返回基础数据库文件路径
 		return pathDir + "/base.g3db"
-	// 长度9-12: 存储在8级目录(8层管理这4层数据: 9,10,11,12层)
+		// 长度9-12: 存储在8级目录(8层管理这4层数据: 9,10,11,12层)
 	} else if keyLen <= 12 {
 		// 拼接路径: 根目录/数据类型/8级目录
 		pathDir := path.Join(dbdir, dataType, "8")
@@ -46,7 +46,7 @@ func getDBPath(dbdir string, dataType string, tilekey string) string {
 		_ = os.MkdirAll(pathDir, 0o755)
 		// 返回8级目录下的数据库文件路径
 		return pathDir + "/" + FileName
-	// 长度13-16: 存储在12级目录(12层管理这4层数据: 13,14,15,16层)
+		// 长度13-16: 存储在12级目录(12层管理这4层数据: 13,14,15,16层)
 	} else if keyLen <= 16 {
 		// 拼接路径: 根目录/数据类型/12级目录
 		pathDir := path.Join(dbdir, dataType, "12")
@@ -54,7 +54,7 @@ func getDBPath(dbdir string, dataType string, tilekey string) string {
 		_ = os.MkdirAll(pathDir, 0o755)
 		// 返回12级目录下的数据库文件路径
 		return pathDir + "/" + FileName
-	// 长度≥17: 数据量巨大,每层独立目录管理(动态按长度生成目录名)
+		// 长度≥17: 数据量巨大,每层独立目录管理(动态按长度生成目录名)
 	} else {
 		// 将tilekey长度转为字符串作为目录名
 		// 例如: 长度17->"17"目录, 长度18->"18"目录, 以此类推
@@ -67,4 +67,9 @@ func getDBPath(dbdir string, dataType string, tilekey string) string {
 		// 返回对应长度目录下的数据库文件路径
 		return pathDir + "/" + FileName
 	}
+}
+
+// GetDBPathForTest 暴露 getDBPath 供测试使用
+func GetDBPathForTest(dbdir string, dataType string, tilekey string) string {
+	return getDBPath(dbdir, dataType, tilekey)
 }

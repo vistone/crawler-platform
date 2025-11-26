@@ -1,4 +1,4 @@
-package Store
+package Store_test
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"crawler-platform/Store"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -18,7 +19,7 @@ func getRedisAddr() string {
 		addr = "localhost:6379"
 	}
 	return addr
-}
+defer Store.CloseRedis()
 
 // TestRedisPutAndGet 测试基本的读写操作
 func TestRedisPutAndGet(t *testing.T) {
@@ -28,12 +29,12 @@ func TestRedisPutAndGet(t *testing.T) {
 	value := []byte("test_value_123")
 
 	// 写入
-	if err := PutTileRedis(addr, dataType, tilekey, value, 0); err != nil {
+	if err := Store.PutTileRedis(addr, dataType, tilekey, value, 0); err != nil {
 		t.Fatalf("写入失败: %v", err)
 	}
 
 	// 读取
-	got, err := GetTileRedis(addr, dataType, tilekey)
+	got, err := Store.GetTileRedis(addr, dataType, tilekey)
 	if err != nil {
 		t.Fatalf("读取失败: %v", err)
 	}
@@ -43,8 +44,8 @@ func TestRedisPutAndGet(t *testing.T) {
 	}
 
 	// 清理
-	_ = DeleteTileRedis(addr, dataType, tilekey)
-}
+	_ = Store.DeleteTileRedis(addr, dataType, tilekey)
+defer Store.CloseRedis()
 
 // TestRedisDelete 测试删除操作
 func TestRedisDelete(t *testing.T) {
@@ -54,24 +55,24 @@ func TestRedisDelete(t *testing.T) {
 	value := []byte("delete_me")
 
 	// 写入
-	if err := PutTileRedis(addr, dataType, tilekey, value, 0); err != nil {
+	if err := Store.PutTileRedis(addr, dataType, tilekey, value, 0); err != nil {
 		t.Fatalf("写入失败: %v", err)
 	}
 
 	// 删除
-	if err := DeleteTileRedis(addr, dataType, tilekey); err != nil {
+	if err := Store.DeleteTileRedis(addr, dataType, tilekey); err != nil {
 		t.Fatalf("删除失败: %v", err)
 	}
 
 	// 验证不存在
-	exists, err := ExistsTileRedis(addr, dataType, tilekey)
+	exists, err := Store.ExistsTileRedis(addr, dataType, tilekey)
 	if err != nil {
 		t.Fatalf("检查存在性失败: %v", err)
 	}
 	if exists {
 		t.Error("删除后 key 仍然存在")
 	}
-}
+defer Store.CloseRedis()
 
 // TestRedisExpiration 测试过期时间
 func TestRedisExpiration(t *testing.T) {
@@ -81,17 +82,17 @@ func TestRedisExpiration(t *testing.T) {
 	value := []byte("expire_test")
 
 	// 写入并设置 2 秒过期
-	if err := PutTileRedis(addr, dataType, tilekey, value, 2*time.Second); err != nil {
+	if err := Store.PutTileRedis(addr, dataType, tilekey, value, 2*time.Second); err != nil {
 		t.Fatalf("写入失败: %v", err)
 	}
 
 	// 立即读取应该成功
-	if _, err := GetTileRedis(addr, dataType, tilekey); err != nil {
+	if _, err := Store.GetTileRedis(addr, dataType, tilekey); err != nil {
 		t.Fatalf("读取失败: %v", err)
 	}
 
 	// 检查 TTL
-	ttl, err := GetTileTTLRedis(addr, dataType, tilekey)
+	ttl, err := Store.GetTileTTLRedis(addr, dataType, tilekey)
 	if err != nil {
 		t.Fatalf("获取 TTL 失败: %v", err)
 	}
@@ -103,14 +104,14 @@ func TestRedisExpiration(t *testing.T) {
 	time.Sleep(3 * time.Second)
 
 	// 验证已过期
-	exists, err := ExistsTileRedis(addr, dataType, tilekey)
+	exists, err := Store.ExistsTileRedis(addr, dataType, tilekey)
 	if err != nil {
 		t.Fatalf("检查存在性失败: %v", err)
 	}
 	if exists {
 		t.Error("过期后 key 仍然存在")
 	}
-}
+defer Store.CloseRedis()
 
 // TestRedisConcurrency 测试并发读写
 func TestRedisConcurrency(t *testing.T) {
@@ -132,11 +133,11 @@ func TestRedisConcurrency(t *testing.T) {
 				})
 				value := []byte{byte(id), byte(i)}
 
-				if err := PutTileRedis(addr, dataType, tilekey, value, 0); err != nil {
+				if err := Store.PutTileRedis(addr, dataType, tilekey, value, 0); err != nil {
 					t.Errorf("goroutine %d 写入失败: %v", id, err)
 				}
 
-				if _, err := GetTileRedis(addr, dataType, tilekey); err != nil {
+				if _, err := Store.GetTileRedis(addr, dataType, tilekey); err != nil {
 					t.Errorf("goroutine %d 读取失败: %v", id, err)
 				}
 			}
@@ -150,7 +151,7 @@ func TestRedisConcurrency(t *testing.T) {
 	}
 
 	t.Logf("并发测试完成: %d goroutines × %d ops = %d 总操作", goroutines, opsPerGoroutine, goroutines*opsPerGoroutine)
-}
+defer Store.CloseRedis()
 
 // TestRedisBulkWrite 测试 Redis 单条写入 10000 条数据
 func TestRedisBulkWrite(t *testing.T) {
@@ -206,7 +207,7 @@ func TestRedisBulkWrite(t *testing.T) {
 	start := time.Now()
 
 	for i, rec := range testData {
-		if err := PutTileRedis(addr, dataType, rec.tilekey, rec.value, 0); err != nil {
+		if err := Store.PutTileRedis(addr, dataType, rec.tilekey, rec.value, 0); err != nil {
 			t.Fatalf("写入第 %d 条数据失败: %v", i, err)
 		}
 	}
@@ -227,7 +228,7 @@ func TestRedisBulkWrite(t *testing.T) {
 	sampleSize := 100
 	for i := 0; i < sampleSize; i++ {
 		idx := rng.Intn(totalRecords)
-		got, err := GetTileRedis(addr, dataType, testData[idx].tilekey)
+		got, err := Store.GetTileRedis(addr, dataType, testData[idx].tilekey)
 		if err != nil {
 			t.Errorf("读取第 %d 条数据失败: %v", idx, err)
 			continue
@@ -241,9 +242,9 @@ func TestRedisBulkWrite(t *testing.T) {
 	// 清理测试数据
 	t.Log("清理测试数据...")
 	for _, rec := range testData {
-		_ = DeleteTileRedis(addr, dataType, rec.tilekey)
+		_ = Store.DeleteTileRedis(addr, dataType, rec.tilekey)
 	}
-}
+defer Store.CloseRedis()
 
 // TestRedisBulkWriteBatch 测试 Redis 批量事务写入 10000 条数据（优化版）
 func TestRedisBulkWriteBatch(t *testing.T) {
@@ -291,7 +292,7 @@ func TestRedisBulkWriteBatch(t *testing.T) {
 	// 开始批量写入性能测试
 	start := time.Now()
 
-	if err := PutTilesRedisBatch(addr, dataType, records, 0); err != nil {
+	if err := Store.PutTilesRedisBatch(addr, dataType, records, 0); err != nil {
 		t.Fatalf("批量写入失败: %v", err)
 	}
 
@@ -318,7 +319,7 @@ func TestRedisBulkWriteBatch(t *testing.T) {
 	}
 
 	for _, key := range sampleKeys {
-		got, err := GetTileRedis(addr, dataType, key)
+		got, err := Store.GetTileRedis(addr, dataType, key)
 		if err != nil {
 			t.Errorf("读取 key=%s 失败: %v", key, err)
 			continue
@@ -332,16 +333,16 @@ func TestRedisBulkWriteBatch(t *testing.T) {
 	// 清理测试数据
 	t.Log("清理测试数据...")
 	for key := range records {
-		_ = DeleteTileRedis(addr, dataType, key)
+		_ = Store.DeleteTileRedis(addr, dataType, key)
 	}
-}
+defer Store.CloseRedis()
 
 // TestRedisSafeDBSelection 测试自动选择安全数据库
 func TestRedisSafeDBSelection(t *testing.T) {
 	addr := getRedisAddr()
 
 	// 1. 扫描所有数据库
-	dbSizes, err := ScanAllRedisDBs(addr)
+	dbSizes, err := Store.ScanAllRedisDBs(addr)
 	if err != nil {
 		t.Fatalf("扫描数据库失败: %v", err)
 	}
@@ -352,20 +353,20 @@ func TestRedisSafeDBSelection(t *testing.T) {
 	}
 
 	// 2. 初始化并自动选择
-	err = InitRedis(addr, nil)
+	err = Store.InitRedis(addr, nil)
 	if err != nil {
 		t.Fatalf("初始化 Redis 失败: %v", err)
 	}
-	defer CloseRedis()
+	defer Store.CloseRedis()
 
 	// 3. 检查选择的数据库
-	allocation := GetAllRedisDBs()
+	allocation := Store.GetAllRedisDBs()
 	t.Logf("数据库分配: %+v", allocation)
 
 	if len(allocation) == 0 {
 		t.Error("应该有数据库分配")
 	}
-}
+defer Store.CloseRedis()
 
 // TestRedisDBIsolation 测试数据库隔离
 func TestRedisDBIsolation(t *testing.T) {
@@ -382,17 +383,17 @@ func TestRedisDBIsolation(t *testing.T) {
 	client1.Set(ctx, "test:isolation:key1", "value1", 0)
 
 	// 自动选择数据库（应该选择 DB 0 或其他空库）
-	err := InitRedis(addr, nil)
+	err := Store.InitRedis(addr, nil)
 	if err != nil {
 		t.Fatalf("初始化 Redis 失败: %v", err)
 	}
-	defer CloseRedis()
+	defer Store.CloseRedis()
 
-	selectedDB := GetRedisDB("test")
+	selectedDB := Store.GetRedisDB("test")
 	t.Logf("选择的数据库: DB %d", selectedDB)
 
 	// 写入数据到选择的数据库
-	err = PutTileRedis("", "test", "0000", []byte("isolation_test"), 0)
+	err = Store.PutTileRedis("", "test", "0000", []byte("isolation_test"), 0)
 	if err != nil {
 		t.Fatalf("写入失败: %v", err)
 	}
@@ -405,10 +406,10 @@ func TestRedisDBIsolation(t *testing.T) {
 
 	// 清理
 	client1.Del(ctx, "test:isolation:key1")
-	_ = DeleteTileRedis("", "test", "0000")
+	_ = Store.DeleteTileRedis("", "test", "0000")
 
 	t.Log("数据库隔离验证通过")
-}
+defer Store.CloseRedis()
 
 // TestRedisMultiDataTypeSeparation 测试多个数据类型独立分配数据库
 func TestRedisMultiDataTypeSeparation(t *testing.T) {
@@ -494,7 +495,7 @@ func TestRedisMultiDataTypeSeparation(t *testing.T) {
 	CloseRedis()
 
 	t.Log("多数据类型隔离验证通过")
-}
+defer Store.CloseRedis()
 
 // TestRedisFiveDataTypes 测试五种数据类型独立分配
 func TestRedisFiveDataTypes(t *testing.T) {
@@ -557,7 +558,7 @@ func TestRedisFiveDataTypes(t *testing.T) {
 	CloseRedis()
 
 	t.Log("五种数据类型独立分配验证通过")
-}
+defer Store.CloseRedis()
 
 // TestRedisEpochManagement 测试 epoch 元数据管理
 func TestRedisEpochManagement(t *testing.T) {
@@ -615,7 +616,7 @@ func TestRedisEpochManagement(t *testing.T) {
 
 	CloseRedis()
 	t.Log("epoch 管理验证通过")
-}
+defer Store.CloseRedis()
 
 // TestRedisMetadataManagement 测试元数据管理（epoch + 其他字段）
 func TestRedisMetadataManagement(t *testing.T) {
@@ -664,4 +665,4 @@ func TestRedisMetadataManagement(t *testing.T) {
 
 	CloseRedis()
 	t.Log("元数据管理验证通过")
-}
+defer Store.CloseRedis()

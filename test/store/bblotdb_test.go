@@ -1,4 +1,4 @@
-package Store
+package Store_test
 
 import (
 	"math/rand"
@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"crawler-platform/Store"
 )
 
 // TestBBoltPutAndGet 测试 bbolt 写入与读取
@@ -29,13 +31,13 @@ func TestBBoltPutAndGet(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// 写入数据
-			err := PutTileBBolt(tmpDir, dataType, tc.tilekey, tc.value)
+			err := Store.PutTileBBolt(tmpDir, dataType, tc.tilekey, tc.value)
 			if err != nil {
 				t.Fatalf("写入失败: %v", err)
 			}
 
 			// 读取数据
-			got, err := GetTileBBolt(tmpDir, dataType, tc.tilekey)
+			got, err := Store.GetTileBBolt(tmpDir, dataType, tc.tilekey)
 			if err != nil {
 				t.Fatalf("读取失败: %v", err)
 			}
@@ -46,7 +48,7 @@ func TestBBoltPutAndGet(t *testing.T) {
 			}
 
 			// 打印生成的数据库路径（验证分层策略）
-			dbPath := getDBPath(tmpDir, dataType, tc.tilekey)
+			dbPath := Store.GetDBPathForTest(tmpDir, dataType, tc.tilekey)
 			t.Logf("tilekey=%s (长度%d) -> 数据库路径: %s", tc.tilekey, len(tc.tilekey), dbPath)
 		})
 	}
@@ -60,22 +62,22 @@ func TestBBoltDelete(t *testing.T) {
 	value := []byte("delete_test_data")
 
 	// 先写入
-	if err := PutTileBBolt(tmpDir, dataType, tilekey, value); err != nil {
+	if err := Store.PutTileBBolt(tmpDir, dataType, tilekey, value); err != nil {
 		t.Fatalf("写入失败: %v", err)
 	}
 
 	// 验证存在
-	if _, err := GetTileBBolt(tmpDir, dataType, tilekey); err != nil {
+	if _, err := Store.GetTileBBolt(tmpDir, dataType, tilekey); err != nil {
 		t.Fatalf("读取失败: %v", err)
 	}
 
 	// 删除
-	if err := DeleteTileBBolt(tmpDir, dataType, tilekey); err != nil {
+	if err := Store.DeleteTileBBolt(tmpDir, dataType, tilekey); err != nil {
 		t.Fatalf("删除失败: %v", err)
 	}
 
 	// 验证已删除
-	if _, err := GetTileBBolt(tmpDir, dataType, tilekey); err == nil {
+	if _, err := Store.GetTileBBolt(tmpDir, dataType, tilekey); err == nil {
 		t.Error("期望删除后读取失败，但成功了")
 	}
 	t.Log("删除测试通过")
@@ -89,13 +91,13 @@ func TestBBoltCorruptRecovery(t *testing.T) {
 
 	// 正常写入
 	originalValue := []byte("original_data")
-	if err := PutTileBBolt(tmpDir, dataType, tilekey, originalValue); err != nil {
+	if err := Store.PutTileBBolt(tmpDir, dataType, tilekey, originalValue); err != nil {
 		t.Fatalf("写入失败: %v", err)
 	}
 
 	// 获取数据库文件路径并关闭连接
-	dbPath := getDBPath(tmpDir, dataType, tilekey)
-	if err := defaultBoltManager.CloseAll(); err != nil {
+	dbPath := Store.GetDBPathForTest(tmpDir, dataType, tilekey)
+	if err := Store.CloseAllBBolt(); err != nil {
 		t.Fatalf("关闭连接失败: %v", err)
 	}
 
@@ -107,12 +109,12 @@ func TestBBoltCorruptRecovery(t *testing.T) {
 
 	// 重新写入（应触发自动修复）
 	newValue := []byte("recovered_data")
-	if err := PutTileBBolt(tmpDir, dataType, tilekey, newValue); err != nil {
+	if err := Store.PutTileBBolt(tmpDir, dataType, tilekey, newValue); err != nil {
 		t.Fatalf("修复后写入失败: %v", err)
 	}
 
 	// 验证能正常读取新数据
-	got, err := GetTileBBolt(tmpDir, dataType, tilekey)
+	got, err := Store.GetTileBBolt(tmpDir, dataType, tilekey)
 	if err != nil {
 		t.Fatalf("修复后读取失败: %v", err)
 	}
@@ -138,7 +140,7 @@ func TestBBoltCompression(t *testing.T) {
 	}{
 		{"0", false},
 		{"0123", false},
-		{"012301230123012301230123", false}, // 24层最大长度
+		{"012301230123012301230123", false},  // 24层最大长度
 		{"", true},                           // 空字符串
 		{"01230123012301230123012345", true}, // 超长
 		{"0123456", true},                    // 非法字符
@@ -146,7 +148,7 @@ func TestBBoltCompression(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.tilekey, func(t *testing.T) {
-			id, err := compressTileKeyToUint64(tc.tilekey)
+			id, err := Store.CompressTileKeyToUint64(tc.tilekey)
 			if (err != nil) != tc.wantErr {
 				t.Errorf("compressTileKeyToUint64(%q) error = %v, wantErr %v", tc.tilekey, err, tc.wantErr)
 				return
@@ -169,7 +171,7 @@ func TestBBoltConcurrency(t *testing.T) {
 		go func(idx int) {
 			tilekey := "0123012301"
 			value := []byte{byte(idx)}
-			if err := PutTileBBolt(tmpDir, dataType, tilekey, value); err != nil {
+			if err := Store.PutTileBBolt(tmpDir, dataType, tilekey, value); err != nil {
 				t.Errorf("并发写入失败 [goroutine %d]: %v", idx, err)
 			}
 			done <- true
@@ -183,7 +185,7 @@ func TestBBoltConcurrency(t *testing.T) {
 
 	// 验证能正常读取（最后一次写入的值）
 	tilekey := "0123012301"
-	if _, err := GetTileBBolt(tmpDir, dataType, tilekey); err != nil {
+	if _, err := Store.GetTileBBolt(tmpDir, dataType, tilekey); err != nil {
 		t.Fatalf("并发后读取失败: %v", err)
 	}
 	t.Log("并发写入测试通过")
@@ -245,7 +247,7 @@ func TestBBoltBulkWrite(t *testing.T) {
 	start := time.Now()
 
 	for i, rec := range testData {
-		if err := PutTileBBolt(tmpDir, dataType, rec.tilekey, rec.value); err != nil {
+		if err := Store.PutTileBBolt(tmpDir, dataType, rec.tilekey, rec.value); err != nil {
 			t.Fatalf("写入第 %d 条数据失败: %v", i, err)
 		}
 	}
@@ -266,7 +268,7 @@ func TestBBoltBulkWrite(t *testing.T) {
 	sampleSize := 100
 	for i := 0; i < sampleSize; i++ {
 		idx := rng.Intn(totalRecords)
-		got, err := GetTileBBolt(tmpDir, dataType, testData[idx].tilekey)
+		got, err := Store.GetTileBBolt(tmpDir, dataType, testData[idx].tilekey)
 		if err != nil {
 			t.Errorf("读取第 %d 条数据失败: %v", idx, err)
 			continue
@@ -324,7 +326,7 @@ func TestBBoltBulkWriteBatch(t *testing.T) {
 	// 开始批量写入性能测试
 	start := time.Now()
 
-	if err := PutTilesBBoltBatch(tmpDir, dataType, records); err != nil {
+	if err := Store.PutTilesBBoltBatch(tmpDir, dataType, records); err != nil {
 		t.Fatalf("批量写入失败: %v", err)
 	}
 
@@ -351,7 +353,7 @@ func TestBBoltBulkWriteBatch(t *testing.T) {
 	}
 
 	for _, key := range sampleKeys {
-		got, err := GetTileBBolt(tmpDir, dataType, key)
+		got, err := Store.GetTileBBolt(tmpDir, dataType, key)
 		if err != nil {
 			t.Errorf("读取 key=%s 失败: %v", key, err)
 			continue

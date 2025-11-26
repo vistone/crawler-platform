@@ -1,25 +1,27 @@
-package Store
+package Store_test
 
 import (
 	"fmt"
 	"math/rand"
 	"testing"
 	"time"
+
+	"crawler-platform/Store"
 )
 
 // TestTileStorageBBoltWithCache 测试 BBolt + Redis 缓存
 func TestTileStorageBBoltWithCache(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	config := TileStorageConfig{
-		Backend:         BackendBBolt,
+	config := Store.TileStorageConfig{
+		Backend:         Store.BackendBBolt,
 		DBDir:           tmpDir,
 		RedisAddr:       getRedisAddr(),
 		CacheExpiration: 5 * time.Minute,
 		EnableCache:     true,
 	}
 
-	storage, err := NewTileStorage(config)
+	storage, err := Store.NewTileStorage(config)
 	if err != nil {
 		t.Fatalf("创建存储管理器失败: %v", err)
 	}
@@ -367,8 +369,8 @@ func TestTileStorageAsyncPersist(t *testing.T) {
 		RedisAddr:          getRedisAddr(),
 		CacheExpiration:    10 * time.Minute,
 		EnableCache:        true,
-		EnableAsyncPersist: true,        // 启用异步持久化
-		PersistBatchSize:   10,           // 小批次便于测试
+		EnableAsyncPersist: true,            // 启用异步持久化
+		PersistBatchSize:   10,              // 小批次便于测试
 		PersistInterval:    2 * time.Second, // 2秒刷新一次
 	}
 
@@ -453,7 +455,7 @@ func TestTileStorageAsyncPersistBatch(t *testing.T) {
 		CacheExpiration:    10 * time.Minute,
 		EnableCache:        true,
 		EnableAsyncPersist: true,
-		PersistBatchSize:   5,            // 批次大小 5
+		PersistBatchSize:   5,                // 批次大小 5
 		PersistInterval:    60 * time.Second, // 长时间间隔，不依赖定时器
 	}
 
@@ -508,7 +510,7 @@ func TestTileStorageAsyncPersistCloseFlush(t *testing.T) {
 		CacheExpiration:    10 * time.Minute,
 		EnableCache:        true,
 		EnableAsyncPersist: true,
-		PersistBatchSize:   100,          // 大批次
+		PersistBatchSize:   100,              // 大批次
 		PersistInterval:    60 * time.Second, // 长间隔
 	}
 
@@ -567,7 +569,7 @@ func TestTileStorageAsyncPersistClearRedis(t *testing.T) {
 		CacheExpiration:        10 * time.Minute,
 		EnableCache:            true,
 		EnableAsyncPersist:     true,
-		PersistBatchSize:       10,           // 增大批次，依赖定时触发
+		PersistBatchSize:       10, // 增大批次，依赖定时触发
 		PersistInterval:        2 * time.Second,
 		ClearRedisAfterPersist: func() *bool { b := true; return &b }(), // 持久化后清理 Redis
 	}

@@ -272,8 +272,8 @@ func TestParseQ2Body_WithoutBaseURL(t *testing.T) {
 // TestQ2Response_JSONMarshaling 测试JSON序列化
 func TestQ2Response_JSONMarshaling(t *testing.T) {
 	response := &GoogleEarth.Q2Response{
-		Tilekey:     "0",
-		Success:     true,
+		Tilekey: "0",
+		Success: true,
 		ImageryList: []GoogleEarth.Q2DataRefJSON{
 			{
 				Tilekey:  "0",
@@ -323,19 +323,19 @@ func TestQ2Response_JSONMarshaling(t *testing.T) {
 // TestQ2NodeJSON_Structure 测试节点JSON结构
 func TestQ2NodeJSON_Structure(t *testing.T) {
 	node := GoogleEarth.Q2NodeJSON{
-		Index:          0,
-		Path:           "0123",
-		Subindex:       123,
-		Children:       []int{0, 2, 3},
-		ChildCount:     3,
-		HasCache:       true,
-		HasImage:       true,
-		HasTerrain:     true,
-		HasVector:      false,
-		CNodeVersion:   100,
-		ImageVersion:   200,
-		TerrainVersion: 300,
-		ImageProvider:  1,
+		Index:           0,
+		Path:            "0123",
+		Subindex:        123,
+		Children:        []int{0, 2, 3},
+		ChildCount:      3,
+		HasCache:        true,
+		HasImage:        true,
+		HasTerrain:      true,
+		HasVector:       false,
+		CNodeVersion:    100,
+		ImageVersion:    200,
+		TerrainVersion:  300,
+		ImageProvider:   1,
 		TerrainProvider: 2,
 		Channels: []GoogleEarth.Q2ChannelJSON{
 			{Type: 10, Version: 20},
@@ -696,7 +696,7 @@ func TestParseQ2Body_RealData(t *testing.T) {
 
 		// 输出前几个节点的详细信息
 		t.Logf("\n前 5 个节点详情:")
-		for i := 0; i < min(5, len(response.Nodes)); i++ {
+		for i := 0; i < minInt(5, len(response.Nodes)); i++ {
 			node := response.Nodes[i]
 			t.Logf("\n节点 %d:", i)
 			t.Logf("  路径: '%s'", node.Path)
@@ -711,7 +711,7 @@ func TestParseQ2Body_RealData(t *testing.T) {
 		// 输出前几个数据引用
 		if len(response.ImageryList) > 0 {
 			t.Logf("\n前 3 个影像引用:")
-			for i := 0; i < min(3, len(response.ImageryList)); i++ {
+			for i := 0; i < minInt(3, len(response.ImageryList)); i++ {
 				ref := response.ImageryList[i]
 				t.Logf("  %d. Tilekey=%s, Version=%d, Provider=%d", i+1, ref.Tilekey, ref.Version, ref.Provider)
 				t.Logf("     URL=%s", ref.URL)

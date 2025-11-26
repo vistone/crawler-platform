@@ -339,7 +339,7 @@ func TestUpdateCryptKeyFromDBRoot_RealData(t *testing.T) {
 	}
 }
 
-func min(a, b int) int {
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}
