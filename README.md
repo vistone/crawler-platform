@@ -1,6 +1,6 @@
 # Crawler Platform
 
-**Version: v0.0.16**
+**Version: v0.0.22**
 
 基于uTLS的高性能爬虫平台，支持TLS指纹伪装、热连接池和IP池管理。
 
@@ -180,6 +180,125 @@ if strings.Contains(ip, ":") {
 ```
 
 在实际测试中，成功连接791个IPv6地址，成功率与IPv4相当。
+
+## 存储与持久化架构（Store）
+
+爬虫平台内置了一个多层存储子系统，用于持久化地理瓦片数据（影像 / 地形 / 矢量等）和元数据。整体结构如下：
+
+- BBolt（嵌入式 KV）
+  - 文件级别：按层级分片存储，采用 `getDBPath` 生成路径：
+    - 0–8 层：`{dbdir}/{dataType}/base.g3db`
+    - 9–12 层：`{dbdir}/{dataType}/8/{前4位前缀}.g3db`
+    - 13–16 层：`{dbdir}/{dataType}/12/{前4位前缀}.g3db`
+    - 17+ 层：`{dbdir}/{dataType}/{level}/{前4位前缀}.g3db`
+  - 主键：使用压缩后的 tilekey（uint64）+ 大端编码为 8 字节 BLOB，包含路径位和层级信息，避免不同层级冲突。
+  - 特性：
+    - 连接池复用数据库文件句柄
+    - 写入前健康检查 + 损坏自动修复（将旧文件重命名为 `.corrupt.<timestamp>` 后重建）
+    - 支持批量事务写入，显著提升大批量导入性能
+
+- SQLite（关系型）
+  - 文件路径与 BBolt 完全一致，同样通过 `getDBPath` 生成，方便迁移与对照。
+  - 主键：同样使用 8 字节 BLOB 主键（压缩后的 tilekey），避免 INTEGER 无法容纳完整 uint64 的问题。
+  - 特性：
+    - 初始化阶段启用 WAL 模式：`PRAGMA journal_mode=WAL;`
+    - 为常用字段（如 epoch、provider_id、时间戳 t）建立索引，支持高效查询和统计
+    - 适合做“查询 / 分析 / 统计”的主力数据库
+
+- Redis（缓存 + 任务队列）
+  - 作为写缓冲层使用，所有瓦片数据最终必须落盘到 BBolt 或 SQLite，Redis 不作为最终持久化存储。
+  - 为不同数据类型（imagery / terrain / vector / q2 / qp 等）分配独立的 Redis DB，实现逻辑隔离；自动从 0–15 号库中选择“key 最少 / 空库”作为安全库，避免影响其他程序。
+
+对应核心文件：
+- `Store/bblotdb.go`：BBolt 连接池与读写实现
+- `Store/sqlitedb.go`：SQLite 连接与表结构、WAL 初始化
+- `Store/redisdb.go`：Redis 客户端管理、多 DB 分配、基础操作
+- `Store/tilestorage.go`：统一存储入口，协调 Redis 和 BBolt/SQLite 的读写
+- `Store/dbpath.go`：分层存储路径生成（与 tilekey 压缩规则配合）
+
+## 瓦片元数据存储（epoch / provider / tm）
+
+在持久化瓦片数据时，平台会同时管理一些元数据字段（如 epoch、provider），并兼容 KV 和关系型存储：
+
+- KV 存储（BBolt / Redis）
+  - 为避免修改、解析原始瓦片数据（BLOB），采用“值头部编码”的方式存储元数据：
+    - Value 格式：`epoch(Uvarint) + provider_id(Uvarint) + data`
+  - `epoch`：
+    - 整数值，来自 dbroot 解析，例如 1029。
+    - 使用 Uvarint 编码，通常占 1–3 字节。
+  - `provider_id`：
+    - 整数 provider ID，对应 dbroot 中的 `ProviderInfoProto.provider_id`。
+    - 为节省空间和保持一致性，只存整数 ID，不存版权字符串；版权信息和 vertical_pixel_offset 在运行时通过 provider_id 查表获取。
+  - `data`：
+    - 原始瓦片二进制数据，不添加头部或版本号。
+
+- SQLite 存储
+  - 将元数据拆成独立列，便于索引和查询：
+    - imagery / terrain / vector：
+      - `tile_id BLOB PRIMARY KEY`（8 字节）
+      - `epoch INTEGER NOT NULL`
+      - `provider_id INTEGER NULL`（为空时存 NULL）
+      - `data BLOB NOT NULL`
+    - tm（带时间的影像）：
+      - `tile_id BLOB` + `t INTEGER`（毫秒时间戳） 组成主键
+      - `epoch INTEGER NOT NULL`
+      - `provider_id INTEGER NULL`
+      - `data BLOB NOT NULL`
+  - 对常用查询字段（如 t、epoch、provider_id）建立索引，支持按时间范围或 provider 过滤。
+
+## q2 / qp 集合与任务状态
+
+q2/qp 类型属于“集合类元数据”，主要用于表示某个区域下的一组瓦片任务。
+
+- 存储规则
+  - 仅在层级可被 4 整除的 tilekey 上存储集合信息（锚点层：level=0,4,8,12,...）。
+  - 对任意 tilekey，会先映射到最近的锚点祖先（tilekey 前缀长度取 `level - (level % 4)`）。
+  - 值存储为原始 q2/qp BLOB，不添加 epoch/provider 头部，epoch 始终来自 dbroot 解析。
+
+- 表结构（锚点表，示意）
+  - 推荐字段：
+    - `tile_id BLOB PRIMARY KEY`（压缩后的 8 字节 tilekey）
+    - `level INTEGER NOT NULL`
+    - `data BLOB NOT NULL`
+    - `status INTEGER NOT NULL DEFAULT 0`
+      - 0 = PENDING（集合任务未完成）
+      - 1 = IN_PROGRESS（处理中）
+      - 2 = DONE（已完成）
+      - 3 = ERROR（失败）
+  - 可选字段：
+    - `prefix4 INTEGER`：tilekey 前 4 级路径编码，用于区域范围查询。
+
+- 状态管理
+  - 初次解析并生成 q2/qp 集合时，将对应锚点记录的 status 置为 0（PENDING）。
+  - 当任务系统开始处理该集合时，置为 1（IN_PROGRESS）。
+  - 集合下所有下载任务完成后，置为 2（DONE）。
+  - 出现不可恢复错误时，可置为 3（ERROR），后续重置为 0 再重试。
+
+## Redis 使用规范（缓存 + q2 任务队列）
+
+Redis 在本平台中主要扮演两种角色：
+
+1. 瓦片数据写缓冲
+   - 写入流程：
+     - 请求到达后，先将瓦片写入 Redis（键为原始 tilekey，值为 KV 头部 + data）。
+     - 后台异步协程从 Redis 读取数据，批量写入 BBolt/SQLite。
+     - 持久化成功后，根据配置（`ClearRedisAfterPersist`）决定是否自动删除 Redis 中对应键。
+   - 说明：Redis 不作为持久化存储，仅用于降低写入延迟、缓冲高并发写操作。
+
+2. q2 任务队列与状态（整数状态码）
+   - 将 q2 解析结果（例如 `q2_0_epoch_1029.json` 中的 `q2_list`）写入 Redis List 作为任务队列。
+   - 任务结构：使用 JSON 形式存储任务项（包含 tilekey、version、url 等）。
+   - 状态跟踪：
+     - `status:{tilekey}`（Hash）：
+       - `status_code`: 0=PENDING, 1=IN_PROGRESS, 2=DONE, 3=ERROR
+       - `completed`: 0/1
+     - 辅助集合（可选）：
+       - `status:0`、`status:1`、`status:2`、`status:3`（Set），存储处于对应状态的 tilekey，便于统计和监控。
+   - 流程示例：
+     - 入队：解析 q2 结果，将任务项 LPUSH 到队列，`status_code=0`。
+     - 取任务：Worker 从队列取出任务，将 `status_code` 置为 1（IN_PROGRESS）。
+     - 持久化成功：写入 BBolt/SQLite 成功后，将 `status_code` 置为 2（DONE），`completed=1`，并按配置清理 Redis 中对应键。
+     - 失败：将 `status_code` 置为 3（ERROR），记录错误信息，后续按需重试。
 
 ## 性能测试
 
