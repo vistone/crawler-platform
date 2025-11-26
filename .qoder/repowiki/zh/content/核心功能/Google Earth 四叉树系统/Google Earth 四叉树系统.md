@@ -440,6 +440,17 @@ I --> J[返回JSON响应]
 **章节来源**
 - [GoogleEarth/geq2.go](file://GoogleEarth/geq2.go#L1-L481)
 
+### 配置项落地与数据结构引用
+
+- `Q2Response` 字段与编号系统映射：`Nodes[Index|Subindex|Children]` 由`QuadtreeNumbering`与`QuadtreePath`转换填充；`DataReferences` 由解析的引用列表归并生成。
+- 路径表示：`QuadtreePath.AsString()` 用于输出人类可读路径表示，便于日志与调试。
+- 版本与提供商：节点的`ImageVersion`、`TerrainVersion`及`Provider`字段来自Q2包中的通道与提供商信息。
+
+参考：
+- [GoogleEarth/quadtree_numbering.go](file://GoogleEarth/quadtree_numbering.go#L6-L204)
+- [GoogleEarth/quadtree_path.go](file://GoogleEarth/quadtree_path.go#L15-L265)
+- [GoogleEarth/geq2.go](file://GoogleEarth/geq2.go#L89-L208)
+
 ## 依赖关系分析
 
 系统的依赖关系呈现清晰的层次结构，从底层的数据结构到高层的应用逻辑：

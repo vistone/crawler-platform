@@ -238,6 +238,16 @@ IPAccessController --> ConnectionManager : 更新状态
 - [utlshotconnpool.go](file://utlsclient/utlshotconnpool.go#L430-L450)
 - [ip_access_controller.go](file://utlsclient/ip_access_controller.go#L22-L41)
 
+### 与连接池集成的准入检查点
+
+- 在`UTLSHotConnPool.createNewHotConnection`之前调用`validateIPAccess(ip)`；若返回false，终止创建并记录拒绝原因。
+- 在`addToPool`阶段不执行IP准入判断，仅维护`ConnectionManager`的`connections`与`hostMapping`。
+- 后台健康检查与访问控制：允许`IPAccessController`动态更新黑白名单；已建立连接的读取不受影响，新建连接将依据最新名单执行准入。
+
+参考：
+- [utlshotconnpool.go](file://utlsclient/utlshotconnpool.go#L410-L508)
+- [ip_access_controller.go](file://utlsclient/ip_access_controller.go#L22-L59)
+
 ### 核心方法详细说明
 
 #### 1. NewIPAccessController()

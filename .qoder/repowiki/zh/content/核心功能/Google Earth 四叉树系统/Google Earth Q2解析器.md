@@ -261,6 +261,16 @@ QuadtreePath --> QuadtreeNumbering
 - [terrain.proto](file://GoogleEarth/proto/terrain.proto#L1-L43)
 - [dbroot.proto](file://GoogleEarth/proto/dbroot.proto#L1-L200)
 
+### Q2数据引用与路径映射示例
+
+- 路径生成：使用`QuadtreePath.AsString()`生成`Tilekey`字符串（示例：“L12/R1024/C2048”）。
+- 引用填充：将`Tilekey`与`Channel/Provider/Version`组合生成`Q2DataRefJSON`，并写入`ImageryRefs`、`TerrainRefs`、`VectorRefs`。
+- URL示例：`https://kh.google.com/q2?tk={Tilekey}&v={Version}&c={Channel}`。
+
+参考：
+- [quadtree_path.go](file://GoogleEarth/quadtree_path.go#L150-L200)
+- [geq2.go](file://GoogleEarth/geq2.go#L155-L208)
+
 ### 常量定义
 
 项目定义了大量常量用于标识不同的数据类型和路径：

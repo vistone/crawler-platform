@@ -533,23 +533,42 @@ func (p *UTLSHotConnPool) createNewHotConnection(targetHost string) (*UTLSConnec
 
 // createNewHotConnectionWithPath 创建新的热连接并验证指定路径（内部方法）
 func (p *UTLSHotConnPool) createNewHotConnectionWithPath(targetHost, path string) (*UTLSConnection, error) {
-	// 1. 获取IP
-	ip, err := p.acquireIP(targetHost)
-	if err != nil {
-		return nil, err
+	// 使用有界重试避免递归导致的无限尝试
+	maxAttempts := p.config.MaxRetries
+	if maxAttempts <= 0 {
+		maxAttempts = 1
 	}
+	var lastErr error
+	for attempts := 0; attempts < maxAttempts; attempts++ {
+		// 1. 获取IP
+		ip, err := p.acquireIP(targetHost)
+		if err != nil {
+			lastErr = err
+			continue
+		}
 
-	// 2. 检查IP是否允许访问
-	if !p.validateIPAccess(ip) {
-		// IP在黑名单中，尝试下一个
-		return p.createNewHotConnectionWithPath(targetHost, path)
+		// 2. 检查IP是否允许访问
+		if !p.validateIPAccess(ip) {
+			// IP在黑名单中，跳过并尝试下一次获取
+			lastErr = fmt.Errorf("IP被拒绝: %s", ip)
+			continue
+		}
+
+		// 3. 选择TLS指纹
+		fingerprint := p.selectFingerprint()
+
+		// 4. 创建并验证连接
+		conn, err := p.createAndValidateConnection(ip, targetHost, fingerprint, path)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return conn, nil
 	}
-
-	// 3. 选择TLS指纹
-	fingerprint := p.selectFingerprint()
-
-	// 4. 创建并验证连接
-	return p.createAndValidateConnection(ip, targetHost, fingerprint, path)
+	if lastErr == nil {
+		lastErr = fmt.Errorf("无法创建连接: 尝试次数耗尽")
+	}
+	return nil, lastErr
 }
 
 // createNewHotConnectionWithValidation 创建新的热连接并验证指定路径

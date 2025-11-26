@@ -243,8 +243,53 @@ func (t *Terrain) meshGroupToDEM(meshes []Mesh, isMercator bool) (string, int, i
 	buf.WriteString(fmt.Sprintf("cellsize %f\n", meshes[0].DeltaX))
 	buf.WriteString("NODATA_value -9999\n")
 
-	// TODO: 实现完整的三角形插值算法（按 libge 的 toDEM 实现）
-	// 这里仅提供简单版本
+	// 使用三角形重心插值生成 DEM 栅格
+	for r := 0; r < nRows; r++ {
+		for c := 0; c < nCols; c++ {
+			x := meshes[0].OriginX + float64(c)*meshes[0].DeltaX
+			y := meshes[0].OriginY + float64(r)*meshes[0].DeltaY
+			z := func() float32 {
+				// 尝试三角形插值
+				for mi := range meshes {
+					m := &meshes[mi]
+					for fi := 0; fi < m.NumFaces; fi++ {
+						f := m.Faces[fi]
+						va := m.Vertices[int(f.A)]
+						vb := m.Vertices[int(f.B)]
+						vc := m.Vertices[int(f.C)]
+						den := ((vb.Y-vc.Y)*(va.X-vc.X) + (vc.X-vb.X)*(va.Y-vc.Y))
+						if den == 0 {
+							continue
+						}
+						wa := ((vb.Y-vc.Y)*(x-vc.X) + (vc.X-vb.X)*(y-vc.Y)) / den
+						wb := ((vc.Y-va.Y)*(x-vc.X) + (va.X-vc.X)*(y-vc.Y)) / den
+						wc := 1 - wa - wb
+						if wa >= 0 && wb >= 0 && wc >= 0 {
+							return float32(wa)*va.Z + float32(wb)*vb.Z + float32(wc)*vc.Z
+						}
+					}
+				}
+				// 回退到最近邻
+				minDist := math.MaxFloat64
+				val := float32(-9999)
+				for mi := range meshes {
+					m := &meshes[mi]
+					for i := 0; i < m.NumPoints; i++ {
+						vx := m.Vertices[i].X
+						vy := m.Vertices[i].Y
+						d := math.Hypot(vx-x, vy-y)
+						if d < minDist {
+							minDist = d
+							val = m.Vertices[i].Z
+						}
+					}
+				}
+				return val
+			}()
+			buf.WriteString(fmt.Sprintf("%.3f ", z))
+		}
+		buf.WriteByte('\n')
+	}
 
 	return buf.String(), nCols, nRows, nil
 }
