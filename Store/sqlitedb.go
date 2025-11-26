@@ -128,6 +128,7 @@ func initSchema(db *sql.DB) error {
 	`)
 	return err
 }
+
 // PutTileSQLite 写入（UPSERT）单条数据
 func PutTileSQLite(dbdir, dataType, tilekey string, value []byte) error {
 	dbPath := getDBPath(dbdir, dataType, tilekey)
@@ -135,7 +136,7 @@ func PutTileSQLite(dbdir, dataType, tilekey string, value []byte) error {
 	if err != nil {
 		return err
 	}
-	tileID, err := compressTileKeyToUint64(tilekey)
+	tileID, err := CompressTileKeyToUint64(tilekey)
 	if err != nil {
 		return err
 	}
@@ -190,7 +191,7 @@ func PutTilesSQLiteBatch(dbdir, dataType string, records map[string][]byte) erro
 
 		// 批量执行
 		for tilekey, value := range group {
-			tileID, err := compressTileKeyToUint64(tilekey)
+			tileID, err := CompressTileKeyToUint64(tilekey)
 			if err != nil {
 				tx.Rollback()
 				return err
@@ -218,7 +219,7 @@ func GetTileSQLite(dbdir, dataType, tilekey string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	tileID, err := compressTileKeyToUint64(tilekey)
+	tileID, err := CompressTileKeyToUint64(tilekey)
 	if err != nil {
 		return nil, err
 	}
@@ -238,7 +239,7 @@ func DeleteTileSQLite(dbdir, dataType, tilekey string) error {
 	if err != nil {
 		return err
 	}
-	tileID, err := compressTileKeyToUint64(tilekey)
+	tileID, err := CompressTileKeyToUint64(tilekey)
 	if err != nil {
 		return err
 	}
@@ -251,4 +252,3 @@ func DeleteTileSQLite(dbdir, dataType, tilekey string) error {
 func CloseAllSQLite() error {
 	return defaultSQLiteManager.CloseAll()
 }
-

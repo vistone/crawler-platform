@@ -9,31 +9,24 @@
 
 ---
 
-## 1. 总体原则（结论）
+## 1. 总体原则（当前实现）
 
-- Redis 键使用“原始 tilekey”，不含数据类型前缀（Redis 已分库按类型隔离）。
-- BBolt/SQLite 主键一律使用“压缩后的 tileID”（8 字节，大端 BLOB）。
-- 路径分片始终基于“原始 tilekey”，与压缩键无冲突：
-  - 生成文件路径时使用 `getDBPath`（原始 tilekey → 分层目录/文件）。
-  - 写入持久化时，将原始 tilekey压缩为 uint64（含层级位），再编码为 8 字节大端主键。
-- KV 值统一采用“极简自描述头部”（无版本号）：
-  - 头部顺序：epoch(Uvarint) → provider_id(Uvarint) → data
-  - provider 为空时编码为 0（单字节），空间极小。
-- SQLite 按列式存储（不使用 KV 头部）：
-  - 普通表：tile_id(BLOB PK)、epoch(INTEGER)、provider_id(INTEGER NULL)、data(BLOB)
-  - tm 表：PRIMARY KEY(tile_id, t)，列含 t(INTEGER 毫秒)、epoch、provider_id、data
-- 仅存 `provider_id`（整数）；版权字符串、offset 等由 dbroot 的 JSON 或映射表在运行时解释，不进入瓦片数据存储。
+- Redis 键格式：`<dataType>:<tilekey>`（tm：`<dataType>:<tilekey>:<milliseconds>`）。
+- BBolt / SQLite 主键一致：`compressTileKeyToUint64` → `encodeKeyBigEndian` 得到 8 字节大端主键。
+- 路径分片使用原始 tilekey，由 `getDBPath` 按长度区间决定目录/文件。
+- 值存储：目前直接写入瓦片的二进制 `value`，没有额外的 epoch/provider 头部。
+- SQLite 表结构：`tiles(tile_id BLOB PRIMARY KEY, value BLOB NOT NULL)`，尚未持久化 epoch/provider。
 
 ---
 
 ## 2. 键（Key）规范
 
-### 2.1 Redis（分库按类型）
+### 2.1 Redis（分库 + 键前缀）
 - 普通瓦片（imagery/terrain/vector/q2/qp）：
-  - 键：原始 tilekey（字符串），如 `"01230123"`
-- tm（带时间瓦片，tm 专用 Redis 库）：
-  - 键：`原始tilekey:milliseconds`，如 `"01230123:1732612345678"`
-- 说明：不再包含 `{dataType}` 前缀，因为 Redis 已通过分库隔离类型。
+  - 键：`<dataType>:<tilekey>`，如 `"imagery:01230123"`
+- tm（带时间瓦片）：
+  - 键：`<dataType>:<tilekey>:<milliseconds>`，如 `"imagery:01230123:1732612345678"`
+- 说明：虽然 Redis 已按类型分库，代码仍保留前缀以便排查；如需切换为“纯 tilekey”方案，需同步修改 `Store/redisdb.go` 与所有调用。
 
 ### 2.2 BBolt/SQLite（统一主键）
 - 主键：压缩后的 tileID（8 字节大端 BLOB），来自：
@@ -42,19 +35,14 @@
 
 ---
 
-## 3. 值（Value）极简头部编码（KV 专用）
+## 3. 值（Value）存储策略
 
-- KV 的 Value 采用极简自描述头部（无版本号）：
-  - 头部顺序：epoch(Uvarint) → provider_id(Uvarint) → data(BLOB)
-- Uvarint 编码规则：每字节低 7 位为数值，高位 0x80 表示“后续有字节”；最后一个字节不置高位。
-- 示例：
-  - epoch = 1029：1029 = 8×128 + 5 → Uvarint：`85 08`
-  - provider_id = 124：`7C`
-  - 头部字节前缀（hex）：`85 08 7C`，后接原始 `data`
-  - provider 为空：Uvarint 编码为 `00`
-- 空间开销：
-  - provider 为空时，头部通常 ≈ 3 字节（epoch≈2B + provider_id=0≈1B）。
-  - 相比在 data 中混存 epoch/provider，头部可独立、快速读取，且开销极低。
+- **当前实现**：Redis、BBolt、SQLite 均直接存储瓦片的原始字节数组，不包含额外头部。
+- **元数据**：epoch/provider 等信息仍由 dbroot 或外部元数据源维护，未写入瓦片值本身。
+- **扩展思路**：若未来要引入头部（例如 Uvarint epoch/provider），需要同步调整
+  - Redis 写入/读取：`Store/redisdb.go`
+  - BBolt / SQLite CRUD：`Store/bblotdb.go`、`Store/sqlitedb.go`
+  - 相关缓存与测试：`TileStorage` 及 `test/store`。
 
 ---
 
@@ -72,94 +60,85 @@
 
 ---
 
-## 5. tm（带时间）数据类型的复合键
+## 5. tm（带时间）数据类型
 
-### 5.1 Redis（tm 库）
-- 键：`原始tilekey:milliseconds`
-- 值：KV 头部（epoch Uvarint、provider_id Uvarint） + data
+当前代码尚未实现 tm 专用的键或表结构。若未来要为 tm 引入独立存储，可参考下列方向：
 
-### 5.2 BBolt（KV 持久化）
-- 复合主键（二进制）：
-  - 8 字节 tileID（压缩后的 uint64 大端）
-  - 8 字节毫秒时间戳（big-endian）
-  - 共 16 字节，支持按 tileID 聚簇、按时间排序/迭代。
+1. **Redis**：键扩展为 `<dataType>:<tilekey>:<milliseconds>`，值仍直接存瓦片数据。
+2. **BBolt**：设计 16 字节复合主键（tileID + 时间戳），并按数据类型划分 bucket。
+3. **SQLite**：新增 `PRIMARY KEY(tile_id, t)` 的表，并根据需要建立 epoch/provider/t 索引。
 
-### 5.3 SQLite（列式）
-- 表主键：PRIMARY KEY(tile_id BLOB, t INTEGER)
-- 列：epoch(INTEGER)、provider_id(INTEGER NULL)、data(BLOB)
-- 索引：按需添加 `idx_t(t)`、`idx_provider(provider_id)`、`idx_epoch(epoch)`。
+在上述改动落地前，本节仅作为规划说明。
 
 ---
 
-## 6. provider 存储与解释
+## 6. provider 存储与解释（当前状态）
 
-- 瓦片值中仅存 `provider_id`（整数），不存版权字符串或偏移：
-  - KV：Uvarint 编码 `provider_id`（为空为 0）。
-  - SQLite：`provider_id INTEGER NULL`（为空存 NULL）。
-- 展示时由系统加载全局 JSON（dbroot 提供）进行 `provider_id → 版权字符串/offset` 映射；瓦片数据存储不嵌入这些字符串，避免膨胀。
+- 当前实现**没有**把 provider 信息写入 Redis/BBolt/SQLite，所有持久化值都是原始瓦片数据。
+- 若业务需要展示 provider、版权等信息，仍依赖 dbroot 或外部映射。
+- 如需在存储层记录 provider，可在未来扩展 Value 头部或 SQLite 列结构，并同步修改 `Store/*` 相关代码。
 
 ---
 
 ## 7. 兼容性与容错
 
-- 旧数据兼容：
-  - 解码 KV 值时，若长度不足以解析两个 Uvarint（epoch/provider_id），视为旧格式：`epoch=0`、`provider_id=0`、`data=原值`。
-- provider 为空：
-  - KV 头部编码为 `00`（Uvarint 的 0）。
-  - SQLite 存 NULL。
-- Redis 分库安全：
-  - 已按类型分库，键不再需要 `{dataType}` 前缀；库本身即类型边界。
+- 由于当前值没有头部，兼容逻辑主要集中在“文件损坏自动备份 + 重建”：
+  - BBolt：`bboltRecoverIfNeeded` 会将损坏文件重命名为 `*.corrupt.<timestamp>` 后重建。
+  - SQLite：`sqliteRecoverIfNeeded` 同理。
+- Redis 连接会在地址变更时自动刷新客户端并重新分配数据库编号。
+- 如未来引入头部或 tm 结构，需要新增相应的容错/回退机制。
 
 ---
 
 ## 8. 读写流程（简图）
 
 - 写入（异步持久化开启时）：
-  1. 下载数据 → Redis 写入：键=原始 tilekey（或 tm 键），值=Uvarint 头部 + data（毫秒级响应）。
+  1. 下载数据 → Redis 写入：键=`<dataType>:<tilekey>`，值=原始 data。
   2. 后台 Worker 批量持久化：
      - 路径分片：`getDBPath`（原始 tilekey）
-     - 主键生成：`compressTileKeyToUint64` → `encodeKeyBigEndian`（8B）
-     - BBolt：KV 写入（普通 8B 主键；tm 16B 复合主键）。
-     - SQLite：列式写入（tile_id/t/epoch/provider_id/data）。
-  3. 持久化成功 → 根据配置清理 Redis。
+     - 主键生成：`compressTileKeyToUint64` → `encodeKeyBigEndian`
+     - BBolt：按 bucket（dataType）写入 8B 主键。
+     - SQLite：执行 `INSERT ... ON CONFLICT DO UPDATE`，表结构只有 `tile_id/value`。
+  3. 可选：持久化成功后按配置删除 Redis。
 
 - 读取：
-  - 快速读（近期数据）→ Redis（直接解析 Uvarint 头部拿 epoch/provider_id）。
-  - 历史/范围/统计 → SQLite（列式 + 索引）。
+  - 缓存命中：`GetTileRedis` 直接返回 value。
+  - 缓存未命中：按后端查询（BBolt/SQLite）→ 返回数据并异步回填缓存。
 
 ---
 
 ## 9. 示例对照
 
-- KV 头部示例（十六进制）：
-  - 条件：`epoch=1029`、`provider_id=124`
-  - Uvarint：epoch → `85 08`，provider_id → `7C`
-  - Value 前缀：`85 08 7C` + `data`
-
-- Redis 键示例：
-  - 普通：`"01230123"`
-  - tm：`"01230123:1732612345678"`
-
-- BBolt/SQLite 主键（BLOB 8B）：来自 `compressTileKeyToUint64` → `encodeKeyBigEndian`。
+- Redis 键：
+  - imagery 层：`imagery:01230123`
+  - tm 规划：`imagery:01230123:1732612345678`（尚未落地）
+- BBolt / SQLite 主键：
+  - `tilekey = "01230123"` → `CompressTileKeyToUint64` → 8B 大端 (`encodeKeyBigEndian`)
+- SQLite 表结构：
+  ```sql
+  CREATE TABLE IF NOT EXISTS tiles (
+      tile_id BLOB PRIMARY KEY,
+      value   BLOB NOT NULL
+  );
+  ```
 
 ---
 
 ## 10. 设计取舍与空间评估
 
-- KV 头部开销：provider 为空时，通常 ≈ 3B；数据量巨大时也可控（相对每条瓦片 data 的体量极小）。
-- SQLite 列式不使用头部，provider 为空存 NULL，查询友好、空间更省。
-- 压缩键的层级位不可去除（混层文件下的主键唯一性与可逆性）。
+- 为降低复杂度，目前未写入任何额外元数据，Redis/BBolt/SQLite 都只存瓦片原始字节。
+- 压缩主键（8B big-endian）在 BBolt/SQLite 间复用，可保证混层文件内主键唯一与可逆。
+- 若未来新增列/头部，需要评估额外空间开销、兼容路径及迁移策略。
 
 ---
 
-## 11. 落地任务建议（实现顺序）
+## 11. 后续演进建议
 
-1. KV 头部编解码工具：Uvarint epoch / provider_id 的 encode/decode。
-2. Redis 键切换为原始 tilekey（tm 键追加 `:milliseconds`）。
-3. 持久化阶段：路径分片（原始 key）＋ 压缩主键（8B BLOB）。
-4. SQLite 表/索引：普通表与 tm 表增加列并建索引（按需）。
-5. 异步持久化 Worker：按规范批量写入；成功后根据配置清理 Redis。
-6. 旧数据兼容：KV 解码器容错（无头部 → epoch=0/provider=0）。
+1. **元数据头部**：决定是否需要在值中编码 epoch/provider；如需要，统一编解码并迁移历史数据。
+2. **SQLite 扩展列**：根据业务需要增加 epoch/provider/t 等列，并补充索引。
+3. **tm 支持**：实现 Redis 键、BBolt/SQLite 复合主键以及 `TileStorage` 层的读写流程。
+4. **批量优化**：为 SQLite 提供真正的批量事务写入，减少逐条写的开销。
+5. **文档同步**：维持 `docs/files/*.md` 与代码的一致性，更新差异清单。
 
 ---
 

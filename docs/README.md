@@ -13,70 +13,72 @@
 ### 📖 核心文档
 
 - [模块文档](modules/) - 各模块详细说明
-- [API参考](api/) - 完整的API文档
+- [UTLS 客户端文档集](utlsclient/README.md) - HTTP 客户端、连接管理、日志
+- [Google Earth 文档集](googleearth/README.md) - 四叉树、地形、加密解密
 - [配置参考](configuration/config-reference.md) - 配置项详解
+- [逐文件对齐状态](files/status.md) - 文档与源码差异盘点
 
 ### 🔧 运维指南
 
-- [部署指南](operations/deployment.md) - 生产环境部署
-- [监控告警](operations/monitoring.md) - 系统监控配置
-- [故障排查](operations/troubleshooting.md) - 常见问题解决
+- 待补充（operations/ 目录当前为空）
 
 ### 👨‍💻 开发指南
 
-- [贡献指南](development/contributing.md) - 如何贡献代码
-- [代码规范](development/coding-standards.md) - 编码标准
-- [测试指南](development/testing-guide.md) - 测试方法
-- [版本管理](development/version-management.md) - 版本发布流程
+- 待补充（development/ 目录当前为空）
 
 ### 📐 设计文档
 
-- [连接生命周期](design/connection-lifecycle.md) - 连接管理设计
-- [并发控制](design/concurrency-control.md) - 并发安全设计
-- [健康检查](design/health-check.md) - 健康检查机制
-- [协议协商](design/protocol-negotiation.md) - HTTP/2协议协商
+- [存储架构与键值规范](design/storage-spec.md)
+- [任务管理设计](design/task_manager/DESIGN.md)
+- [任务管理手册](design/task_manager/README.md)
 
 ### 🔍 内部实现
 
-- [锁策略分析](internals/lock-strategy.md) - 多级锁机制
-- [性能优化技术](internals/performance-optimization.md) - 性能优化细节
+- 待补充（internals/ 目录当前为空）
 
 ## 文档结构
 
 ```
 docs/
-├── modules/              # 模块文档
-│   ├── utlsclient.md
-│   ├── hot-connection-pool.md
-│   ├── tls-fingerprint.md
-│   ├── ip-pool-management.md
-│   └── googleearth.md
-├── api/                  # API参考
-│   ├── utlshotconnpool-api.md
-│   ├── utlsclient-api.md
-│   ├── connection-api.md
-│   └── interfaces.md
-├── configuration/        # 配置文档
-│   ├── config-reference.md
-│   ├── pool-config.md
-│   └── environment.md
-├── operations/           # 运维文档
-│   ├── deployment.md
-│   ├── monitoring.md
-│   └── troubleshooting.md
-├── development/          # 开发文档
-│   ├── contributing.md
-│   ├── coding-standards.md
-│   ├── testing-guide.md
-│   └── version-management.md
-├── design/               # 设计文档
-│   ├── connection-lifecycle.md
-│   ├── concurrency-control.md
-│   ├── health-check.md
-│   └── protocol-negotiation.md
-└── internals/            # 内部实现
-    ├── lock-strategy.md
-    └── performance-optimization.md
+├── README.md
+├── modules/
+│   ├── localippool.md
+│   ├── remotedomainippool.md
+│   ├── whiteblackippool.md
+│   ├── utlsfingerprint.md
+│   ├── utlshotconnpool.md
+│   └── README.md
+├── configuration/
+│   └── config-reference.md
+├── googleearth/
+│   ├── README.md
+│   ├── terrain.md
+│   ├── quadtreeset.md
+│   ├── streaming_imagery.md
+│   ├── diorama_streaming.md
+│   ├── dbroot.md
+│   └── code/
+│       ├── constants.md
+│       ├── gecrypt.md
+│       ├── INDEX.md
+│       └── modules_summary.md
+├── utlsclient/
+│   ├── README.md
+│   ├── FILE_STRUCTURE.md
+│   ├── LOGGING.md
+│   ├── DESIGN_ISSUES.md
+│   ├── README_TEST.md
+│   └── TEST_SUMMARY.md
+├── files/
+│   ├── status.md
+│   └── Store/
+│       ├── bblotdb.md
+│       ├── dbpath.md
+│       ├── redisdb.md
+│       ├── sqlitedb.md
+│       └── tilestorage.md
+└── reports/
+    └── 热连接池性能测试报告.md（位于 test/reports/）
 ```
 
 ## 推荐阅读路径
@@ -90,17 +92,15 @@ docs/
 
 ### 进阶路径
 
-1. [API参考](api/) - 深入API细节
-2. [设计文档](design/) - 理解设计思想
-3. [内部实现](internals/) - 掌握实现细节
-4. [性能优化](../test/reports/热连接池性能测试报告.md) - 性能调优
+1. [模块文档](modules/) - 深入各模块细节
+2. [Google Earth 文档集](googleearth/) - 重点理解四叉树与地形
+3. [存储架构](design/storage-spec.md) - Redis/BBolt/SQLite 键值与结构
+4. [性能测试报告](../test/reports/热连接池性能测试报告.md)
 
 ### 贡献者路径
 
-1. [贡献指南](development/contributing.md) - 贡献流程
-2. [代码规范](development/coding-standards.md) - 编码标准
-3. [测试指南](development/testing-guide.md) - 测试要求
-4. [版本管理](development/version-management.md) - 发布流程
+- 待补充（development/ 目录当前为空）
+- [逐文件文档索引](files/status.md) - 快速了解代码与文档对齐情况
 
 ## 文档维护
 

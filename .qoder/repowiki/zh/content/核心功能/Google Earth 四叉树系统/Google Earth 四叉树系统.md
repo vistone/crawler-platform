@@ -15,7 +15,17 @@
 - [test/googleearth/qtutils_test.go](file://test/googleearth/qtutils_test.go)
 - [test/googleearth/quadtree_path_test.go](file://test/googleearth/quadtree_path_test.go)
 - [test/googleearth/tree_numbering_test.go](file://test/googleearth/tree_numbering_test.go)
+- [GoogleEarth/geq2.go](file://GoogleEarth/geq2.go)
+- [test/googleearth/geq2_test.go](file://test/googleearth/geq2_test.go)
 </cite>
+
+## 更新摘要
+**变更内容**
+- 在“核心组件”部分新增了“Q2解析系统”小节，详细描述了Q2数据包的解析功能
+- 在“详细组件分析”部分新增了“Q2数据包解析”小节，深入分析了Q2解析的核心数据结构和处理流程
+- 更新了“架构概览”图，增加了Q2解析模块
+- 更新了“依赖关系分析”图，增加了Q2解析模块的依赖关系
+- 所有新增内容均基于`geq2.go`和相关测试文件的代码分析
 
 ## 目录
 1. [简介](#简介)
@@ -32,7 +42,7 @@
 
 Google Earth 四叉树系统是一个专门设计用于处理 Google Earth 数据格式的高性能 Go 语言库。该系统实现了完整的四叉树空间索引机制，支持复杂的地理空间数据管理和检索操作。系统基于 Protocol Buffers 定义的数据格式，提供了从基础的四叉树路径操作到高级的地形数据处理的全套功能。
 
-该系统的核心优势在于其高效的内存使用和快速的空间查询能力，特别适用于大规模地理信息系统（GIS）应用和实时地图渲染场景。通过精心设计的编码方案和优化的数据结构，系统能够在保持高精度的同时实现卓越的性能表现。
+该系统的核心优势在于其高效的内存使用和快速的空间查询能力，特别适用于大规模地理信息系统（GIS）应用和实时地图渲染场景。通过精心设计的编码方案和优化的数据结构，系统能够在保持高精度的同时实现卓越的性能表现。新引入的Q2解析功能进一步增强了系统对四叉树数据集合的处理能力，为地理空间数据的组织和查询提供了更强大的支持。
 
 ## 项目结构
 
@@ -46,30 +56,33 @@ B --> C[tree_numbering.go]
 D[constants.go] --> E[gecrypt.go]
 E --> F[gedbroot.go]
 G[terrain.go] --> H[jpeg_comment_date.go]
+I[geq2.go] --> J[Q2解析功能]
 end
 subgraph "Protocol Buffer 支持"
-I[proto/] --> J[pb/]
-J --> K[生成的 Go 代码]
+K[proto/] --> L[pb/]
+L --> M[生成的 Go 代码]
 end
 subgraph "测试模块"
-L[test/googleearth/]
-L --> M[单元测试]
-L --> N[集成测试]
+N[test/googleearth/]
+N --> O[单元测试]
+N --> P[集成测试]
 end
-A --> O[四叉树路径操作]
-B --> P[四叉树编号系统]
-C --> Q[通用树编号]
-D --> R[常量定义]
-E --> S[加密解密]
-F --> T[数据库根处理]
-G --> U[地形数据处理]
-H --> V[JPEG注释日期]
+A --> Q[四叉树路径操作]
+B --> R[四叉树编号系统]
+C --> S[通用树编号]
+D --> T[常量定义]
+E --> U[加密解密]
+F --> V[数据库根处理]
+G --> W[地形数据处理]
+H --> X[JPEG注释日期]
+I --> Y[Q2解析]
 ```
 
 **图表来源**
 - [GoogleEarth/quadtree_path.go](file://GoogleEarth/quadtree_path.go#L1-L50)
 - [GoogleEarth/quadtree_numbering.go](file://GoogleEarth/quadtree_numbering.go#L1-L50)
 - [GoogleEarth/tree_numbering.go](file://GoogleEarth/tree_numbering.go#L1-L50)
+- [GoogleEarth/geq2.go](file://GoogleEarth/geq2.go#L1-L50)
 
 **章节来源**
 - [GoogleEarth/README.md](file://GoogleEarth/README.md#L1-L145)
@@ -90,10 +103,15 @@ H --> V[JPEG注释日期]
 
 系统内置了完整的加密解密功能，支持 Google Earth 数据的保护和安全传输。该模块实现了特定的 XOR 加密算法和 ZLIB 压缩处理。
 
+### Q2解析系统
+
+Q2解析系统是新增的核心组件，负责解析和处理四叉树数据集合（Q2）。该系统将二进制格式的Q2数据包转换为结构化的JSON响应，便于上层应用使用。
+
 **章节来源**
 - [GoogleEarth/quadtree_path.go](file://GoogleEarth/quadtree_path.go#L1-L265)
 - [GoogleEarth/tree_numbering.go](file://GoogleEarth/tree_numbering.go#L1-L298)
 - [GoogleEarth/gecrypt.go](file://GoogleEarth/gecrypt.go#L1-L175)
+- [GoogleEarth/geq2.go](file://GoogleEarth/geq2.go#L1-L200)
 
 ## 架构概览
 
@@ -108,28 +126,33 @@ end
 subgraph "业务逻辑层"
 D[四叉树编号系统] --> E[路径操作]
 E --> F[节点关系计算]
+G[Q2解析系统] --> H[数据集合处理]
 end
 subgraph "数据访问层"
-G[加密解密模块] --> H[数据库根处理]
-H --> I[协议缓冲区]
+I[加密解密模块] --> J[数据库根处理]
+J --> K[协议缓冲区]
 end
 subgraph "基础设施层"
-J[常量定义] --> K[工具函数]
-K --> L[测试框架]
+L[常量定义] --> M[工具函数]
+M --> N[测试框架]
 end
 A --> D
-D --> G
-G --> J
+D --> I
+I --> L
+G --> D
+G --> I
 style A fill:#e1f5fe
 style D fill:#f3e5f5
-style G fill:#e8f5e8
-style J fill:#fff3e0
+style G fill:#d1c4e9
+style I fill:#e8f5e8
+style L fill:#fff3e0
 ```
 
 **图表来源**
 - [GoogleEarth/terrain.go](file://GoogleEarth/terrain.go#L1-L50)
 - [GoogleEarth/quadtree_numbering.go](file://GoogleEarth/quadtree_numbering.go#L1-L50)
 - [GoogleEarth/gecrypt.go](file://GoogleEarth/gecrypt.go#L1-L50)
+- [GoogleEarth/geq2.go](file://GoogleEarth/geq2.go#L1-L50)
 
 ## 详细组件分析
 
@@ -327,6 +350,96 @@ H --> K
 - [GoogleEarth/gecrypt.go](file://GoogleEarth/gecrypt.go#L1-L175)
 - [GoogleEarth/gedbroot.go](file://GoogleEarth/gedbroot.go#L1-L35)
 
+### Q2数据包解析
+
+Q2数据包解析是四叉树系统的重要组成部分，负责处理四叉树数据集合的解析和转换。
+
+#### Q2响应结构
+
+Q2解析系统将二进制数据包转换为结构化的JSON响应，包含丰富的元数据和引用信息：
+
+```mermaid
+classDiagram
+class Q2Response {
++string Tilekey
++[]Q2DataRefJSON ImageryList
++[]Q2DataRefJSON TerrainList
++[]Q2DataRefJSON VectorList
++[]Q2DataRefJSON Q2List
++bool Success
++string Error
++string MagicID
++uint32 DataTypeID
++uint32 Version
++int NodeCount
++[]Q2NodeJSON Nodes
++*Q2References DataReferences
+}
+class Q2NodeJSON {
++int Index
++string Path
++int Subindex
++[]int Children
++int ChildCount
++bool HasCache
++bool HasImage
++bool HasTerrain
++bool HasVector
++uint16 CNodeVersion
++uint16 ImageVersion
++uint16 TerrainVersion
++uint8 ImageProvider
++uint8 TerrainProvider
++[]Q2ChannelJSON Channels
+}
+class Q2ChannelJSON {
++uint16 Type
++uint16 Version
+}
+class Q2DataRefJSON {
++string Tilekey
++uint16 Version
++uint16 Channel
++uint16 Provider
++string URL
+}
+class Q2References {
++[]Q2DataRefJSON ImageryRefs
++[]Q2DataRefJSON TerrainRefs
++[]Q2DataRefJSON VectorRefs
++[]Q2DataRefJSON Q2ChildRefs
+}
+Q2Response --> Q2NodeJSON : "包含"
+Q2Response --> Q2References : "引用"
+Q2References --> Q2DataRefJSON : "包含"
+```
+
+**图表来源**
+- [GoogleEarth/geq2.go](file://GoogleEarth/geq2.go#L89-L105)
+
+#### Q2解析流程
+
+Q2解析系统的工作流程包括数据解码、节点转换和引用提取三个主要阶段：
+
+```mermaid
+flowchart TD
+A[输入二进制数据] --> B{数据解码}
+B --> |成功| C[填充基本信息]
+B --> |失败| D[返回错误信息]
+C --> E[获取编号系统]
+E --> F[转换所有节点]
+F --> G[提取数据引用]
+G --> H[转换引用为JSON]
+H --> I[填充输出列表]
+I --> J[返回JSON响应]
+```
+
+**图表来源**
+- [GoogleEarth/geq2.go](file://GoogleEarth/geq2.go#L155-L208)
+
+**章节来源**
+- [GoogleEarth/geq2.go](file://GoogleEarth/geq2.go#L1-L481)
+
 ## 依赖关系分析
 
 系统的依赖关系呈现清晰的层次结构，从底层的数据结构到高层的应用逻辑：
@@ -339,28 +452,34 @@ A --> C[bytes]
 A --> D[fmt]
 A --> E[math]
 A --> F[time]
+A --> G[encoding/json]
 end
 subgraph "内部模块"
-G[constants.go] --> H[quadtree_path.go]
-H --> I[quadtree_numbering.go]
-I --> J[tree_numbering.go]
-K[gecrypt.go] --> L[gedbroot.go]
-M[terrain.go] --> N[jpeg_comment_date.go]
+H[constants.go] --> I[quadtree_path.go]
+I --> J[quadtree_numbering.go]
+J --> K[tree_numbering.go]
+L[gecrypt.go] --> M[gedbroot.go]
+N[terrain.go] --> O[jpeg_comment_date.go]
+P[geq2.go] --> Q[quadtree_packet.go]
+Q --> R[quadtree_numbering.go]
+Q --> S[quadtree_path.go]
 end
 subgraph "测试模块"
-O[test_files] --> P[单元测试]
-O --> Q[集成测试]
+T[test_files] --> U[单元测试]
+T --> V[集成测试]
 end
-B --> H
-C --> I
-D --> J
-E --> M
-F --> N
+B --> I
+C --> J
+D --> K
+E --> N
+F --> O
+G --> P
 ```
 
 **图表来源**
 - [GoogleEarth/constants.go](file://GoogleEarth/constants.go#L1-L66)
 - [GoogleEarth/quadtree_path.go](file://GoogleEarth/quadtree_path.go#L1-L10)
+- [GoogleEarth/geq2.go](file://GoogleEarth/geq2.go#L1-L10)
 
 ### 模块间通信
 
@@ -370,10 +489,12 @@ F --> N
 - **编号模块**：提供节点编号和查询功能
 - **数据模块**：提供数据解析和处理功能
 - **工具模块**：提供通用的辅助功能
+- **Q2解析模块**：提供数据集合的解析和转换功能
 
 **章节来源**
 - [GoogleEarth/quadtree_numbering.go](file://GoogleEarth/quadtree_numbering.go#L1-L204)
 - [GoogleEarth/terrain.go](file://GoogleEarth/terrain.go#L1-L307)
+- [GoogleEarth/geq2.go](file://GoogleEarth/geq2.go#L1-L481)
 
 ## 性能考虑
 
@@ -431,9 +552,19 @@ F --> N
 2. 验证数据完整性
 3. 检查魔数匹配
 
+#### Q2解析失败
+
+**症状**：Q2数据包解析失败
+**原因**：二进制格式错误或数据损坏
+**解决方案**：
+1. 验证输入数据的完整性
+2. 检查Magic ID是否正确
+3. 确认数据包结构是否符合规范
+
 **章节来源**
 - [test/googleearth/quadtree_numbering_test.go](file://test/googleearth/quadtree_numbering_test.go#L1-L202)
 - [test/googleearth/quadtree_path_test.go](file://test/googleearth/quadtree_path_test.go#L1-L168)
+- [test/googleearth/geq2_test.go](file://test/googleearth/geq2_test.go#L1-L740)
 
 ## 结论
 
@@ -445,6 +576,7 @@ Google Earth 四叉树系统是一个设计精良、功能完备的空间索引�
 2. **高精度**：支持亚米级的地理空间定位精度
 3. **高扩展性**：模块化设计便于功能扩展和维护
 4. **高可靠性**：完善的错误处理和测试覆盖保证系统稳定性
+5. **新功能支持**：新增的Q2解析功能增强了对数据集合的处理能力
 
 ### 应用前景
 
@@ -453,5 +585,6 @@ Google Earth 四叉树系统是一个设计精良、功能完备的空间索引�
 - 实时地图渲染和导航
 - 三维地形可视化
 - 空间数据分析和挖掘
+- 四叉树数据集合的高效处理
 
 通过持续的优化和功能增强，Google Earth 四叉树系统将继续在地理信息技术领域发挥重要作用。

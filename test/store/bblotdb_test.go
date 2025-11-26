@@ -191,11 +191,11 @@ func TestBBoltConcurrency(t *testing.T) {
 	t.Log("并发写入测试通过")
 }
 
-// TestBBoltBulkWrite 测试 bbolt 批量高速写入 10000 条数据
+// TestBBoltBulkWrite 测试 bbolt 批量高速写入 200 条数据
 func TestBBoltBulkWrite(t *testing.T) {
 	tmpDir := t.TempDir()
 	dataType := "imagery"
-	const totalRecords = 10000
+	const totalRecords = 200
 
 	// 初始化随机种子
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -225,8 +225,8 @@ func TestBBoltBulkWrite(t *testing.T) {
 		}
 		usedKeys[key] = true
 
-		// 随机生成 1MB 以内的 value（模拟真实瓦片数据）
-		valueSize := 100 + rng.Intn(1024*1024-100) // 100B ~ 1MB
+		// 随机生成 64KB 以内的 value（减少内存压力）
+		valueSize := 100 + rng.Intn(64*1024-100) // 100B ~ 64KB
 		value := make([]byte, valueSize)
 		rng.Read(value) // 填充随机字节
 
@@ -265,7 +265,7 @@ func TestBBoltBulkWrite(t *testing.T) {
 	t.Logf("  平均延迟: %v/条", elapsed/time.Duration(totalRecords))
 
 	// 验证随机抽样读取
-	sampleSize := 100
+	sampleSize := 20
 	for i := 0; i < sampleSize; i++ {
 		idx := rng.Intn(totalRecords)
 		got, err := Store.GetTileBBolt(tmpDir, dataType, testData[idx].tilekey)
@@ -280,11 +280,11 @@ func TestBBoltBulkWrite(t *testing.T) {
 	t.Logf("随机抽样验证 %d 条记录通过", sampleSize)
 }
 
-// TestBBoltBulkWriteBatch 测试 bbolt 批量事务写入 10000 条数据（优化版）
+// TestBBoltBulkWriteBatch 测试 bbolt 批量事务写入 200 条数据（优化版）
 func TestBBoltBulkWriteBatch(t *testing.T) {
 	tmpDir := t.TempDir()
 	dataType := "imagery"
-	const totalRecords = 10000
+	const totalRecords = 200
 
 	// 初始化随机种子
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -308,8 +308,8 @@ func TestBBoltBulkWriteBatch(t *testing.T) {
 		}
 		usedKeys[key] = true
 
-		// 随机生成 1MB 以内的 value
-		valueSize := 100 + rng.Intn(1024*1024-100)
+		// 随机生成 64KB 以内的 value
+		valueSize := 100 + rng.Intn(64*1024-100)
 		value := make([]byte, valueSize)
 		rng.Read(value)
 

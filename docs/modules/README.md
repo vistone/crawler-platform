@@ -2,57 +2,31 @@
 
 本目录包含crawler-platform项目的各个核心模块的详细文档。
 
-## 核心模块
+## 模块清单
 
-### [uTLS客户端模块](utlsclient.md)
-HTTP客户端核心实现，支持HTTP/1.1和HTTP/2协议，提供Do、Get、Post等方法。
+| 模块 | 文档 | 说明 |
+|------|------|------|
+| 本地 IP 池 | [localippool.md](localippool.md) | 本地地址池、预热策略 |
+| 远程域名 IP 池 | [remotedomainippool.md](remotedomainippool.md) | 远程域名分配/降级 |
+| 黑白名单 IP 管理 | [whiteblackippool.md](whiteblackippool.md) | 黑白名单策略、链路隔离 |
+| uTLS 指纹 | [utlsfingerprint.md](utlsfingerprint.md) | TLS 指纹库、UA/语言随机化 |
+| 热连接池实现 | [utlshotconnpool.md](utlshotconnpool.md) | 热连接生命周期与调度 |
+| uTLS 客户端文档集 | [docs/utlsclient/README.md](../utlsclient/README.md) | HTTP 客户端、连接管理、日志等 |
+| Google Earth 数据处理 | [docs/googleearth/README.md](../googleearth/README.md) | 四叉树、地形、加密解密 |
 
-**关键特性**:
-- HTTP/1.1 和 HTTP/2 自动协商
-- 请求超时和重试机制
-- 调试模式支持
-
-### [热连接池模块](hot-connection-pool.md)
-连接池化管理，实现连接复用、生命周期管理和健康检查。
-
-**关键特性**:
-- 3-6倍性能提升
-- 自动健康检查
-- 连接统计信息
-
-### [TLS指纹模块](tls-fingerprint.md)
-提供33种真实浏览器TLS指纹，支持User-Agent和Accept-Language随机化。
-
-**关键特性**:
-- 33种浏览器指纹
-- 90种语言组合
-- 97.8%独特性
-
-### [IP池管理模块](ip-pool-management.md)
-管理本地IP池和远程域名IP池，支持黑白名单机制。
-
-**关键特性**:
-- 本地/远程IP池
-- 黑白名单管理
-- 自动IP降级
-
-### [Google Earth数据处理](googleearth.md)
-四叉树数据解析、地形处理、坐标转换和加密解密。
-
-**关键特性**:
-- 四叉树系统
-- 地形数据处理
-- Protobuf解析
+> 说明：原先分散在 `docs/` 根目录的模块文档已经统一归档到本目录或对应子目录，避免重复和路径混乱。
 
 ## 快速导航
 
-| 模块 | 文档 | 代码位置 | 测试 |
-|------|------|----------|------|
-| uTLS客户端 | [utlsclient.md](utlsclient.md) | `utlsclient/utlsclient.go` | `test/utlsclient/utlsclient_test.go` |
-| 热连接池 | [hot-connection-pool.md](hot-connection-pool.md) | `utlsclient/utlshotconnpool.go` | `test/utlsclient/utlshotconnpool_test.go` |
-| TLS指纹 | [tls-fingerprint.md](tls-fingerprint.md) | `utlsclient/utlsfingerprint.go` | `test/utlsclient/utlsfingerprint_test.go` |
-| IP池管理 | [ip-pool-management.md](ip-pool-management.md) | `localippool/`, `remotedomainippool/` | - |
-| Google Earth | [googleearth.md](googleearth.md) | `GoogleEarth/` | `test/googleearth/` |
+| 模块 | 文档 | 代码位置 | 相关测试 |
+|------|------|----------|----------|
+| Local IP Pool | [localippool.md](localippool.md) | `localippool/` | `test/store`（共享逻辑） |
+| Remote Domain IP Pool | [remotedomainippool.md](remotedomainippool.md) | `remotedomainippool/` | `test/store` |
+| White/Black IP Pool | [whiteblackippool.md](whiteblackippool.md) | `remotedomainippool/whiteblackippool.go` | `test/store` |
+| uTLS Fingerprint | [utlsfingerprint.md](utlsfingerprint.md) | `utlsclient/utlsfingerprint.go` | `test/utlsclient/utlsfingerprint_test.go` |
+| UTLS 热连接池 | [utlshotconnpool.md](utlshotconnpool.md) | `utlsclient/utlshotconnpool.go` | `test/utlsclient/utlshotconnpool_test.go` |
+| uTLS Client 详细文档 | [utlsclient/README.md](../utlsclient/README.md) | `utlsclient/` | `test/utlsclient/*_test.go` |
+| Google Earth | [googleearth/README.md](../googleearth/README.md) | `GoogleEarth/` | `test/googleearth/*` |
 
 ## 模块关系图
 
@@ -73,10 +47,6 @@ graph TB
     I --> J[LocalIPPool<br/>本地IP池]
     I --> K[RemoteDomainIPPool<br/>远程IP池]
     
-    style A fill:#fff4e6
-    style B fill:#e1f5ff
-    style C fill:#e1f5ff
-    style G fill:#f0f9ff
 ```
 
 ## 相关文档

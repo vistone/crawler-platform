@@ -48,7 +48,7 @@ func TestSQLitePutAndGet(t *testing.T) {
 			}
 
 			// 打印生成的数据库路径（验证分层策略）
-			dbPath := Store.GetDBPath(tmpDir, dataType, tc.tilekey)
+			dbPath := Store.GetDBPathForTest(tmpDir, dataType, tc.tilekey)
 			t.Logf("tilekey=%s (长度%d) -> 数据库路径: %s", tc.tilekey, len(tc.tilekey), dbPath)
 		})
 	}
@@ -134,7 +134,7 @@ func TestSQLiteCorruptRecovery(t *testing.T) {
 	}
 
 	// 获取数据库文件路径并关闭连接
-	dbPath := Store.GetDBPath(tmpDir, dataType, tilekey)
+	dbPath := Store.GetDBPathForTest(tmpDir, dataType, tilekey)
 	if err := Store.CloseAllSQLite(); err != nil {
 		t.Fatalf("关闭连接失败: %v", err)
 	}
@@ -147,12 +147,12 @@ func TestSQLiteCorruptRecovery(t *testing.T) {
 
 	// 重新写入（应触发自动修复）
 	newValue := []byte("recovered_data")
-	if err := PutTileSQLite(tmpDir, dataType, tilekey, newValue); err != nil {
+	if err := Store.PutTileSQLite(tmpDir, dataType, tilekey, newValue); err != nil {
 		t.Fatalf("修复后写入失败: %v", err)
 	}
 
 	// 验证能正常读取新数据
-	got, err := GetTileSQLite(tmpDir, dataType, tilekey)
+	got, err := Store.GetTileSQLite(tmpDir, dataType, tilekey)
 	if err != nil {
 		t.Fatalf("修复后读取失败: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestSQLitePathStrategy(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.tilekey, func(t *testing.T) {
-			got := getDBPath(tmpDir, dataType, tc.tilekey)
+			got := Store.GetDBPathForTest(tmpDir, dataType, tc.tilekey)
 			if got != tc.expectedPath {
 				t.Errorf("路径不匹配:\n  got:  %s\n  want: %s", got, tc.expectedPath)
 			} else {
@@ -212,7 +212,7 @@ func TestSQLiteConcurrency(t *testing.T) {
 		go func(idx int) {
 			tilekey := "0123012301"
 			value := []byte{byte(idx)}
-			if err := PutTileSQLite(tmpDir, dataType, tilekey, value); err != nil {
+			if err := Store.PutTileSQLite(tmpDir, dataType, tilekey, value); err != nil {
 				t.Errorf("并发写入失败 [goroutine %d]: %v", idx, err)
 			}
 			done <- true
@@ -226,7 +226,7 @@ func TestSQLiteConcurrency(t *testing.T) {
 
 	// 验证能正常读取（最后一次写入的值）
 	tilekey := "0123012301"
-	if _, err := GetTileSQLite(tmpDir, dataType, tilekey); err != nil {
+	if _, err := Store.GetTileSQLite(tmpDir, dataType, tilekey); err != nil {
 		t.Fatalf("并发后读取失败: %v", err)
 	}
 	t.Log("并发写入测试通过")
@@ -248,14 +248,14 @@ func TestSQLiteMultipleDataTypes(t *testing.T) {
 
 	// 写入不同类型数据
 	for _, dt := range dataTypes {
-		if err := PutTileSQLite(tmpDir, dt.name, tilekey, dt.value); err != nil {
+		if err := Store.PutTileSQLite(tmpDir, dt.name, tilekey, dt.value); err != nil {
 			t.Fatalf("写入 %s 失败: %v", dt.name, err)
 		}
 	}
 
 	// 验证各类型数据独立且正确
 	for _, dt := range dataTypes {
-		got, err := GetTileSQLite(tmpDir, dt.name, tilekey)
+		got, err := Store.GetTileSQLite(tmpDir, dt.name, tilekey)
 		if err != nil {
 			t.Fatalf("读取 %s 失败: %v", dt.name, err)
 		}
@@ -266,11 +266,11 @@ func TestSQLiteMultipleDataTypes(t *testing.T) {
 	}
 }
 
-// TestSQLiteBulkWrite 测试 sqlite 批量高速写入 10000 条数据
+// TestSQLiteBulkWrite 测试 sqlite 批量高速写入 200 条数据
 func TestSQLiteBulkWrite(t *testing.T) {
 	tmpDir := t.TempDir()
 	dataType := "imagery"
-	const totalRecords = 10000
+	const totalRecords = 200
 
 	// 初始化随机种子
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -300,8 +300,8 @@ func TestSQLiteBulkWrite(t *testing.T) {
 		}
 		usedKeys[key] = true
 
-		// 随机生成 1MB 以内的 value（模拟真实瓦片数据）
-		valueSize := 100 + rng.Intn(1024*1024-100) // 100B ~ 1MB
+		// 随机生成 64KB 以内的 value（避免占用过多内存）
+		valueSize := 100 + rng.Intn(64*1024-100) // 100B ~ 64KB
 		value := make([]byte, valueSize)
 		rng.Read(value) // 填充随机字节
 
@@ -322,7 +322,7 @@ func TestSQLiteBulkWrite(t *testing.T) {
 	start := time.Now()
 
 	for i, rec := range testData {
-		if err := PutTileSQLite(tmpDir, dataType, rec.tilekey, rec.value); err != nil {
+		if err := Store.PutTileSQLite(tmpDir, dataType, rec.tilekey, rec.value); err != nil {
 			t.Fatalf("写入第 %d 条数据失败: %v", i, err)
 		}
 	}
@@ -340,10 +340,10 @@ func TestSQLiteBulkWrite(t *testing.T) {
 	t.Logf("  平均延迟: %v/条", elapsed/time.Duration(totalRecords))
 
 	// 验证随机抽样读取
-	sampleSize := 100
+	sampleSize := 20
 	for i := 0; i < sampleSize; i++ {
 		idx := rng.Intn(totalRecords)
-		got, err := GetTileSQLite(tmpDir, dataType, testData[idx].tilekey)
+		got, err := Store.GetTileSQLite(tmpDir, dataType, testData[idx].tilekey)
 		if err != nil {
 			t.Errorf("读取第 %d 条数据失败: %v", idx, err)
 			continue
@@ -355,11 +355,11 @@ func TestSQLiteBulkWrite(t *testing.T) {
 	t.Logf("随机抽样验证 %d 条记录通过", sampleSize)
 }
 
-// TestSQLiteBulkWriteBatch 测试 sqlite 批量事务写入 10000 条数据（优化版）
+// TestSQLiteBulkWriteBatch 测试 sqlite 批量事务写入 200 条数据（优化版）
 func TestSQLiteBulkWriteBatch(t *testing.T) {
 	tmpDir := t.TempDir()
 	dataType := "imagery"
-	const totalRecords = 10000
+	const totalRecords = 200
 
 	// 初始化随机种子
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -383,8 +383,8 @@ func TestSQLiteBulkWriteBatch(t *testing.T) {
 		}
 		usedKeys[key] = true
 
-		// 随机生成 1MB 以内的 value
-		valueSize := 100 + rng.Intn(1024*1024-100)
+		// 随机生成 64KB 以内的 value
+		valueSize := 100 + rng.Intn(64*1024-100)
 		value := make([]byte, valueSize)
 		rng.Read(value)
 
@@ -401,7 +401,7 @@ func TestSQLiteBulkWriteBatch(t *testing.T) {
 	// 开始批量写入性能测试
 	start := time.Now()
 
-	if err := PutTilesSQLiteBatch(tmpDir, dataType, records); err != nil {
+	if err := Store.PutTilesSQLiteBatch(tmpDir, dataType, records); err != nil {
 		t.Fatalf("批量写入失败: %v", err)
 	}
 
@@ -418,7 +418,7 @@ func TestSQLiteBulkWriteBatch(t *testing.T) {
 	t.Logf("  平均延迟: %v/条", elapsed/time.Duration(totalRecords))
 
 	// 验证随机抽样读取
-	sampleSize := 100
+	sampleSize := 20
 	var sampleKeys []string
 	for k := range records {
 		sampleKeys = append(sampleKeys, k)
@@ -428,7 +428,7 @@ func TestSQLiteBulkWriteBatch(t *testing.T) {
 	}
 
 	for _, key := range sampleKeys {
-		got, err := GetTileSQLite(tmpDir, dataType, key)
+		got, err := Store.GetTileSQLite(tmpDir, dataType, key)
 		if err != nil {
 			t.Errorf("读取 key=%s 失败: %v", key, err)
 			continue

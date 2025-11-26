@@ -14,11 +14,6 @@ examples/utlsclient/                 # 使用示例目录
 ├── example_utlsclient_usage.go      # UTLS客户端使用示例
 ├── example_hotconnpool_usage.go     # 热连接池完整示例
 └── README.md                        # 示例说明文档
-
-test/utlsclient/                     # 测试程序目录
-├── test_simple.go                   # 简单测试程序
-├── test_structure.go                # 结构测试程序
-└── README.md                        # 测试程序说明文档
 ```
 
 ## 文件分类
@@ -53,9 +48,8 @@ test/utlsclient/                     # 测试程序目录
 - `example_utlsclient_usage.go` - UTLS客户端示例
 - `example_hotconnpool_usage.go` - 热连接池完整示例
 
-### 测试程序 (`test/utlsclient/*.go`)
-- `test_simple.go` - 简单测试程序
-- `test_structure.go` - 结构测试程序
+### 测试位置
+- 所有测试位于 `utlsclient/*_test.go`，使用 `go test ./utlsclient -v` 运行
 
 ### 文档文件
 - `README.md` - 主要文档
@@ -104,14 +98,6 @@ go run examples/utlsclient/example_utlsclient_usage.go
 go run examples/utlsclient/example_hotconnpool_usage.go
 ```
 
-### 运行测试程序
-```bash
-# 简单测试
-go run test/utlsclient/test_simple.go
-
-# 结构测试
-go run test/utlsclient/test_structure.go
-```
 
 ## 清理建议
 

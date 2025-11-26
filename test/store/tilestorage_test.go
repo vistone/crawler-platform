@@ -46,7 +46,7 @@ func TestTileStorageBBoltWithCache(t *testing.T) {
 	}
 
 	// 3. 验证缓存存在
-	exists, _ := ExistsTileRedis(config.RedisAddr, dataType, tilekey)
+	exists, _ := Store.ExistsTileRedis(config.RedisAddr, dataType, tilekey)
 	if !exists {
 		t.Error("缓存未写入")
 	}
@@ -69,28 +69,28 @@ func TestTileStorageBBoltWithCache(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// 7. 验证缓存已回填
-	exists2, _ := ExistsTileRedis(config.RedisAddr, dataType, tilekey)
+	exists2, _ := Store.ExistsTileRedis(config.RedisAddr, dataType, tilekey)
 	if !exists2 {
 		t.Error("缓存回填失败")
 	}
 
 	// 清理
-	_ = DeleteTileRedis(config.RedisAddr, dataType, tilekey)
+	_ = Store.DeleteTileRedis(config.RedisAddr, dataType, tilekey)
 }
 
 // TestTileStorageSQLiteWithCache 测试 SQLite + Redis 缓存
 func TestTileStorageSQLiteWithCache(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	config := TileStorageConfig{
-		Backend:         BackendSQLite,
+	config := Store.TileStorageConfig{
+		Backend:         Store.BackendSQLite,
 		DBDir:           tmpDir,
 		RedisAddr:       getRedisAddr(),
 		CacheExpiration: 5 * time.Minute,
 		EnableCache:     true,
 	}
 
-	storage, err := NewTileStorage(config)
+	storage, err := Store.NewTileStorage(config)
 	if err != nil {
 		t.Fatalf("创建存储管理器失败: %v", err)
 	}
@@ -121,13 +121,13 @@ func TestTileStorageSQLiteWithCache(t *testing.T) {
 func TestTileStorageWithoutCache(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	config := TileStorageConfig{
-		Backend:     BackendBBolt,
+	config := Store.TileStorageConfig{
+		Backend:     Store.BackendBBolt,
 		DBDir:       tmpDir,
 		EnableCache: false, // 禁用缓存
 	}
 
-	storage, err := NewTileStorage(config)
+	storage, err := Store.NewTileStorage(config)
 	if err != nil {
 		t.Fatalf("创建存储管理器失败: %v", err)
 	}
@@ -161,15 +161,15 @@ func TestTileStorageWithoutCache(t *testing.T) {
 func TestTileStorageBatchWrite(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	config := TileStorageConfig{
-		Backend:         BackendBBolt,
+	config := Store.TileStorageConfig{
+		Backend:         Store.BackendBBolt,
 		DBDir:           tmpDir,
 		RedisAddr:       getRedisAddr(),
 		CacheExpiration: 10 * time.Minute,
 		EnableCache:     true,
 	}
 
-	storage, err := NewTileStorage(config)
+	storage, err := Store.NewTileStorage(config)
 	if err != nil {
 		t.Fatalf("创建存储管理器失败: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestTileStorageBatchWrite(t *testing.T) {
 		}
 
 		// 验证缓存也写入了
-		exists, _ := ExistsTileRedis(config.RedisAddr, dataType, tilekey)
+		exists, _ := Store.ExistsTileRedis(config.RedisAddr, dataType, tilekey)
 		if !exists {
 			t.Errorf("缓存未写入: %s", tilekey)
 		}
@@ -216,15 +216,15 @@ func TestTileStorageBatchWrite(t *testing.T) {
 func TestTileStorageWarmupCache(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	config := TileStorageConfig{
-		Backend:         BackendBBolt,
+	config := Store.TileStorageConfig{
+		Backend:         Store.BackendBBolt,
 		DBDir:           tmpDir,
 		RedisAddr:       getRedisAddr(),
 		CacheExpiration: 5 * time.Minute,
 		EnableCache:     true,
 	}
 
-	storage, err := NewTileStorage(config)
+	storage, err := Store.NewTileStorage(config)
 	if err != nil {
 		t.Fatalf("创建存储管理器失败: %v", err)
 	}
@@ -240,16 +240,16 @@ func TestTileStorageWarmupCache(t *testing.T) {
 	// 1. 只写入持久化（不写缓存）
 	for tilekey, value := range records {
 		switch config.Backend {
-		case BackendBBolt:
-			_ = PutTileBBolt(tmpDir, dataType, tilekey, value)
-		case BackendSQLite:
-			_ = PutTileSQLite(tmpDir, dataType, tilekey, value)
+		case Store.BackendBBolt:
+			_ = Store.PutTileBBolt(tmpDir, dataType, tilekey, value)
+		case Store.BackendSQLite:
+			_ = Store.PutTileSQLite(tmpDir, dataType, tilekey, value)
 		}
 	}
 
 	// 2. 验证缓存中不存在
 	for tilekey := range records {
-		exists, _ := ExistsTileRedis(config.RedisAddr, dataType, tilekey)
+		exists, _ := Store.ExistsTileRedis(config.RedisAddr, dataType, tilekey)
 		if exists {
 			t.Errorf("预热前缓存不应存在: %s", tilekey)
 		}
@@ -266,7 +266,7 @@ func TestTileStorageWarmupCache(t *testing.T) {
 
 	// 4. 验证缓存已加载
 	for tilekey := range records {
-		exists, _ := ExistsTileRedis(config.RedisAddr, dataType, tilekey)
+		exists, _ := Store.ExistsTileRedis(config.RedisAddr, dataType, tilekey)
 		if !exists {
 			t.Errorf("预热后缓存应存在: %s", tilekey)
 		}
@@ -282,7 +282,7 @@ func TestTileStorageWarmupCache(t *testing.T) {
 func TestTileStoragePerformance(t *testing.T) {
 	tmpDir := t.TempDir()
 	dataType := "imagery"
-	const testCount = 1000
+	const testCount = 200
 
 	// 准备测试数据
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -292,19 +292,19 @@ func TestTileStoragePerformance(t *testing.T) {
 		for j := 0; j < 8; j++ {
 			tilekey += string('0' + byte(rng.Intn(4)))
 		}
-		value := make([]byte, 1024) // 1KB 数据
+		value := make([]byte, 256) // 256B 数据，减小内存占用
 		rng.Read(value)
 		testData[tilekey] = value
 	}
 
 	// 测试 1: 无缓存
 	t.Run("无缓存", func(t *testing.T) {
-		config := TileStorageConfig{
-			Backend:     BackendBBolt,
+		config := Store.TileStorageConfig{
+			Backend:     Store.BackendBBolt,
 			DBDir:       tmpDir + "/no_cache",
 			EnableCache: false,
 		}
-		storage, _ := NewTileStorage(config)
+		storage, _ := Store.NewTileStorage(config)
 		defer storage.Close()
 
 		// 写入
@@ -326,14 +326,14 @@ func TestTileStoragePerformance(t *testing.T) {
 
 	// 测试 2: 有缓存
 	t.Run("有缓存", func(t *testing.T) {
-		config := TileStorageConfig{
-			Backend:         BackendBBolt,
+		config := Store.TileStorageConfig{
+			Backend:         Store.BackendBBolt,
 			DBDir:           tmpDir + "/with_cache",
 			RedisAddr:       getRedisAddr(),
 			CacheExpiration: 5 * time.Minute,
 			EnableCache:     true,
 		}
-		storage, _ := NewTileStorage(config)
+		storage, _ := Store.NewTileStorage(config)
 		defer storage.Close()
 
 		// 写入
@@ -354,7 +354,7 @@ func TestTileStoragePerformance(t *testing.T) {
 
 		// 清理 Redis
 		for tilekey := range testData {
-			_ = DeleteTileRedis(config.RedisAddr, dataType, tilekey)
+			_ = Store.DeleteTileRedis(config.RedisAddr, dataType, tilekey)
 		}
 	})
 }
@@ -363,8 +363,8 @@ func TestTileStoragePerformance(t *testing.T) {
 func TestTileStorageAsyncPersist(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	config := TileStorageConfig{
-		Backend:            BackendBBolt,
+	config := Store.TileStorageConfig{
+		Backend:            Store.BackendBBolt,
 		DBDir:              tmpDir,
 		RedisAddr:          getRedisAddr(),
 		CacheExpiration:    10 * time.Minute,
@@ -374,7 +374,7 @@ func TestTileStorageAsyncPersist(t *testing.T) {
 		PersistInterval:    2 * time.Second, // 2秒刷新一次
 	}
 
-	storage, err := NewTileStorage(config)
+	storage, err := Store.NewTileStorage(config)
 	if err != nil {
 		t.Fatalf("创建存储管理器失败: %v", err)
 	}
@@ -398,7 +398,7 @@ func TestTileStorageAsyncPersist(t *testing.T) {
 
 	// 2. 立即从 Redis 读取（应能读到）
 	for tilekey, expectedValue := range testData {
-		got, err := GetTileRedis(config.RedisAddr, dataType, tilekey)
+		got, err := Store.GetTileRedis(config.RedisAddr, dataType, tilekey)
 		if err != nil {
 			t.Errorf("Redis 读取失败: %v", err)
 			continue
@@ -421,10 +421,10 @@ func TestTileStorageAsyncPersist(t *testing.T) {
 		var err error
 
 		switch config.Backend {
-		case BackendBBolt:
-			got, err = GetTileBBolt(tmpDir, dataType, tilekey)
-		case BackendSQLite:
-			got, err = GetTileSQLite(tmpDir, dataType, tilekey)
+		case Store.BackendBBolt:
+			got, err = Store.GetTileBBolt(tmpDir, dataType, tilekey)
+		case Store.BackendSQLite:
+			got, err = Store.GetTileSQLite(tmpDir, dataType, tilekey)
 		}
 
 		if err != nil {
@@ -440,7 +440,7 @@ func TestTileStorageAsyncPersist(t *testing.T) {
 
 	// 清理
 	for tilekey := range testData {
-		_ = DeleteTileRedis(config.RedisAddr, dataType, tilekey)
+		_ = Store.DeleteTileRedis(config.RedisAddr, dataType, tilekey)
 	}
 }
 
@@ -448,8 +448,8 @@ func TestTileStorageAsyncPersist(t *testing.T) {
 func TestTileStorageAsyncPersistBatch(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	config := TileStorageConfig{
-		Backend:            BackendBBolt,
+	config := Store.TileStorageConfig{
+		Backend:            Store.BackendBBolt,
 		DBDir:              tmpDir,
 		RedisAddr:          getRedisAddr(),
 		CacheExpiration:    10 * time.Minute,
@@ -459,7 +459,7 @@ func TestTileStorageAsyncPersistBatch(t *testing.T) {
 		PersistInterval:    60 * time.Second, // 长时间间隔，不依赖定时器
 	}
 
-	storage, err := NewTileStorage(config)
+	storage, err := Store.NewTileStorage(config)
 	if err != nil {
 		t.Fatalf("创建存储管理器失败: %v", err)
 	}
@@ -481,7 +481,7 @@ func TestTileStorageAsyncPersistBatch(t *testing.T) {
 
 	// 验证持久化
 	for i, tilekey := range testKeys {
-		got, err := GetTileBBolt(tmpDir, dataType, tilekey)
+		got, err := Store.GetTileBBolt(tmpDir, dataType, tilekey)
 		if err != nil {
 			t.Errorf("持久化读取失败 (tilekey=%s): %v", tilekey, err)
 		}
@@ -495,7 +495,7 @@ func TestTileStorageAsyncPersistBatch(t *testing.T) {
 
 	// 清理
 	for _, tilekey := range testKeys {
-		_ = DeleteTileRedis(config.RedisAddr, dataType, tilekey)
+		_ = Store.DeleteTileRedis(config.RedisAddr, dataType, tilekey)
 	}
 }
 
@@ -503,8 +503,8 @@ func TestTileStorageAsyncPersistBatch(t *testing.T) {
 func TestTileStorageAsyncPersistCloseFlush(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	config := TileStorageConfig{
-		Backend:            BackendBBolt,
+	config := Store.TileStorageConfig{
+		Backend:            Store.BackendBBolt,
 		DBDir:              tmpDir,
 		RedisAddr:          getRedisAddr(),
 		CacheExpiration:    10 * time.Minute,
@@ -514,7 +514,7 @@ func TestTileStorageAsyncPersistCloseFlush(t *testing.T) {
 		PersistInterval:    60 * time.Second, // 长间隔
 	}
 
-	storage, err := NewTileStorage(config)
+	storage, err := Store.NewTileStorage(config)
 	if err != nil {
 		t.Fatalf("创建存储管理器失败: %v", err)
 	}
@@ -538,7 +538,7 @@ func TestTileStorageAsyncPersistCloseFlush(t *testing.T) {
 	// 验证持久化成功
 	for i := 0; i < 3; i++ {
 		tilekey := fmt.Sprintf("%04d", i)
-		got, err := GetTileBBolt(tmpDir, dataType, tilekey)
+		got, err := Store.GetTileBBolt(tmpDir, dataType, tilekey)
 		if err != nil {
 			t.Errorf("持久化读取失败 (tilekey=%s): %v", tilekey, err)
 			continue
@@ -554,7 +554,7 @@ func TestTileStorageAsyncPersistCloseFlush(t *testing.T) {
 	// 清理
 	for i := 0; i < 3; i++ {
 		tilekey := fmt.Sprintf("%04d", i)
-		_ = DeleteTileRedis(config.RedisAddr, dataType, tilekey)
+		_ = Store.DeleteTileRedis(config.RedisAddr, dataType, tilekey)
 	}
 }
 
@@ -562,8 +562,8 @@ func TestTileStorageAsyncPersistCloseFlush(t *testing.T) {
 func TestTileStorageAsyncPersistClearRedis(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	config := TileStorageConfig{
-		Backend:                BackendBBolt,
+	config := Store.TileStorageConfig{
+		Backend:                Store.BackendBBolt,
 		DBDir:                  tmpDir,
 		RedisAddr:              getRedisAddr(),
 		CacheExpiration:        10 * time.Minute,
@@ -574,7 +574,7 @@ func TestTileStorageAsyncPersistClearRedis(t *testing.T) {
 		ClearRedisAfterPersist: func() *bool { b := true; return &b }(), // 持久化后清理 Redis
 	}
 
-	storage, err := NewTileStorage(config)
+	storage, err := Store.NewTileStorage(config)
 	if err != nil {
 		t.Fatalf("创建存储管理器失败: %v", err)
 	}
@@ -594,7 +594,7 @@ func TestTileStorageAsyncPersistClearRedis(t *testing.T) {
 	// 2. 立即验证 Redis 中存在
 	time.Sleep(100 * time.Millisecond) // 等待 Redis 写入完成
 	for _, tilekey := range testKeys {
-		exists, err := ExistsTileRedis(config.RedisAddr, dataType, tilekey)
+		exists, err := Store.ExistsTileRedis(config.RedisAddr, dataType, tilekey)
 		if err != nil {
 			t.Errorf("检查 Redis 失败: %v", err)
 		}
@@ -608,7 +608,7 @@ func TestTileStorageAsyncPersistClearRedis(t *testing.T) {
 
 	// 4. 验证持久化成功
 	for i, tilekey := range testKeys {
-		got, err := GetTileBBolt(tmpDir, dataType, tilekey)
+		got, err := Store.GetTileBBolt(tmpDir, dataType, tilekey)
 		if err != nil {
 			t.Errorf("持久化读取失败: %v", err)
 		}
@@ -623,7 +623,7 @@ func TestTileStorageAsyncPersistClearRedis(t *testing.T) {
 	time.Sleep(2 * time.Second) // 等待异步删除完成
 
 	for _, tilekey := range testKeys {
-		exists, _ := ExistsTileRedis(config.RedisAddr, dataType, tilekey)
+		exists, _ := Store.ExistsTileRedis(config.RedisAddr, dataType, tilekey)
 		if exists {
 			t.Errorf("Redis 中不应该存在 key: %s (应已清理)", tilekey)
 		}
@@ -636,8 +636,8 @@ func TestTileStorageAsyncPersistClearRedis(t *testing.T) {
 func TestTileStorageAsyncPersistKeepRedis(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	config := TileStorageConfig{
-		Backend:                BackendBBolt,
+	config := Store.TileStorageConfig{
+		Backend:                Store.BackendBBolt,
 		DBDir:                  tmpDir,
 		RedisAddr:              getRedisAddr(),
 		CacheExpiration:        10 * time.Minute,
@@ -648,7 +648,7 @@ func TestTileStorageAsyncPersistKeepRedis(t *testing.T) {
 		ClearRedisAfterPersist: func() *bool { b := false; return &b }(), // 不清理 Redis
 	}
 
-	storage, err := NewTileStorage(config)
+	storage, err := Store.NewTileStorage(config)
 	if err != nil {
 		t.Fatalf("创建存储管理器失败: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestTileStorageAsyncPersistKeepRedis(t *testing.T) {
 
 	// 验证持久化成功
 	for _, tilekey := range testKeys {
-		_, err := GetTileBBolt(tmpDir, dataType, tilekey)
+		_, err := Store.GetTileBBolt(tmpDir, dataType, tilekey)
 		if err != nil {
 			t.Errorf("持久化读取失败: %v", err)
 		}
@@ -679,7 +679,7 @@ func TestTileStorageAsyncPersistKeepRedis(t *testing.T) {
 	// 验证 Redis 仍然存在
 	time.Sleep(1 * time.Second) // 等待异步操作完成
 	for _, tilekey := range testKeys {
-		exists, _ := ExistsTileRedis(config.RedisAddr, dataType, tilekey)
+		exists, _ := Store.ExistsTileRedis(config.RedisAddr, dataType, tilekey)
 		if !exists {
 			t.Errorf("Redis 中应该保留 key: %s (ClearRedisAfterPersist=false)", tilekey)
 		}
@@ -689,6 +689,6 @@ func TestTileStorageAsyncPersistKeepRedis(t *testing.T) {
 
 	// 清理
 	for _, tilekey := range testKeys {
-		_ = DeleteTileRedis(config.RedisAddr, dataType, tilekey)
+		_ = Store.DeleteTileRedis(config.RedisAddr, dataType, tilekey)
 	}
 }

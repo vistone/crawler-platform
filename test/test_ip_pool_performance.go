@@ -30,7 +30,7 @@ func main() {
 		"https://kh.google.com/rt/earth/NodeData/pb=!1m2!1s12!2u1002!2e1!3u1028!4b0",
 	}
 
-	fmt.Println("=== IP池性能测试（轮询每个IP访问4个URL）===\n")
+	fmt.Println("=== IP池性能测试（轮询每个IP访问4个URL）===")
 
 	// 1. 读取IP池
 	fmt.Println("步骤1：读取IP池...")
@@ -185,7 +185,7 @@ func main() {
 	// 4. 业务请求阶段：使用后3个URL测试热连接性能
 	fmt.Println("步骤3：业务请求阶段 - 测试热连接池性能...")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Println("注意：所有IP的连接已预热，现在测试的是纯粹的热连接复用性能！\n")
+	fmt.Println("注意：所有IP的连接已预热，现在测试的是纯粹的热连接复用性能！")
 
 	// 使用后3个URL进行测试
 	businessURLs := urls[1:]

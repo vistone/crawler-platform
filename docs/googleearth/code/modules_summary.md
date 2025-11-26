@@ -1,5 +1,7 @@
 # GoogleEarth 模块功能详解
 
+> 注意：本页按照当前源码文件对齐（GoogleEarth 目录），旧文档中提到的 gedbroot.go、qtutils.go 等文件名均与当前源码一致；下文已按实际实现核对。
+
 ## 文件功能速查
 
 ### 1. gedbroot.go - dbRoot 解析器
