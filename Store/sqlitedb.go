@@ -116,17 +116,45 @@ func initSchema(db *sql.DB) error {
 	// 启用 WAL 模式以提升并发读写性能
 	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
 		// WAL 模式在某些环境可能不支持，记录但不阻塞
-		// 可选：记录日志或返回错误
 	}
 
-	// 使用 BLOB 存储 tile_id（8字节），避免 SQLite INTEGER 对 uint64 高位的限制
-	_, err := db.Exec(`
+	// 通用瓦片表：使用 BLOB 存储 tile_id（8字节），并增加 epoch / provider_id 列，便于查询
+	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS tiles (
 			tile_id BLOB PRIMARY KEY,
+			epoch INTEGER NOT NULL DEFAULT 0,
+			provider_id INTEGER NULL,
 			value   BLOB NOT NULL
 		);
-	`)
-	return err
+	`); err != nil {
+		return err
+	}
+
+	// q2 集合锚点表：仅存原始 BLOB 与层级、状态
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS tiles_q2 (
+			tile_id BLOB PRIMARY KEY,
+			level INTEGER NOT NULL,
+			data  BLOB NOT NULL,
+			status INTEGER NOT NULL DEFAULT 0
+		);
+	`); err != nil {
+		return err
+	}
+
+	// qp 集合锚点表：结构同 q2
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS tiles_qp (
+			tile_id BLOB PRIMARY KEY,
+			level INTEGER NOT NULL,
+			data  BLOB NOT NULL,
+			status INTEGER NOT NULL DEFAULT 0
+		);
+	`); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // PutTileSQLite 写入（UPSERT）单条数据
@@ -141,6 +169,26 @@ func PutTileSQLite(dbdir, dataType, tilekey string, value []byte) error {
 		return err
 	}
 	key := encodeKeyBigEndian(tileID) // 使用 8 字节 BLOB
+
+	// q2/qp 存储规则：仅在 level 可被 4 整除的锚点层存储，值为原始 BLOB，不加头部
+	if dataType == "q2" || dataType == "qp" {
+		level := len(tilekey)
+		if level%4 != 0 {
+			// 非锚点层不存
+			return nil
+		}
+		table := "tiles_q2"
+		if dataType == "qp" {
+			table = "tiles_qp"
+		}
+		_, err = db.Exec(`
+			INSERT INTO `+table+`(tile_id, level, data) VALUES(?, ?, ?)
+			ON CONFLICT(tile_id) DO UPDATE SET level=excluded.level, data=excluded.data;
+		`, key, level, value)
+		return err
+	}
+
+	// 普通瓦片：写入 tiles 表，epoch/provider_id 默认列保持为 0/NULL
 	_, err = db.Exec(`
 		INSERT INTO tiles(tile_id, value) VALUES(?, ?)
 		ON CONFLICT(tile_id) DO UPDATE SET value=excluded.value;
@@ -224,7 +272,17 @@ func GetTileSQLite(dbdir, dataType, tilekey string) ([]byte, error) {
 		return nil, err
 	}
 	key := encodeKeyBigEndian(tileID)
-	row := db.QueryRow(`SELECT value FROM tiles WHERE tile_id=?;`, key)
+
+	var row *sql.Row
+	if dataType == "q2" || dataType == "qp" {
+		table := "tiles_q2"
+		if dataType == "qp" {
+			table = "tiles_qp"
+		}
+		row = db.QueryRow(`SELECT data FROM `+table+` WHERE tile_id=?;`, key)
+	} else {
+		row = db.QueryRow(`SELECT value FROM tiles WHERE tile_id=?;`, key)
+	}
 	var val []byte
 	if err := row.Scan(&val); err != nil {
 		return nil, err
@@ -244,7 +302,16 @@ func DeleteTileSQLite(dbdir, dataType, tilekey string) error {
 		return err
 	}
 	key := encodeKeyBigEndian(tileID)
-	_, err = db.Exec(`DELETE FROM tiles WHERE tile_id=?;`, key)
+
+	var table string
+	if dataType == "q2" {
+		table = "tiles_q2"
+	} else if dataType == "qp" {
+		table = "tiles_qp"
+	} else {
+		table = "tiles"
+	}
+	_, err = db.Exec(`DELETE FROM `+table+` WHERE tile_id=?;`, key)
 	return err
 }
 

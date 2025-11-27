@@ -248,9 +248,9 @@ func (rm *RedisManager) getOrInitClientForDataType(addr, dataType string) (*redi
 	return client, nil
 }
 
-// buildRedisKey 构建 Redis key: {dataType}:{tilekey}
+// buildRedisKey 构建 Redis key（使用原始 tilekey；已按数据类型分库，无需前缀）
 func buildRedisKey(dataType, tilekey string) string {
-	return fmt.Sprintf("%s:%s", dataType, tilekey)
+	return tilekey
 }
 
 // buildMetaKey 构建元数据 key
