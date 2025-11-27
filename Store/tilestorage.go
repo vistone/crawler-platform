@@ -1,7 +1,9 @@
 package Store
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sync"
@@ -15,6 +17,127 @@ const (
 	BackendBBolt  StorageBackend = "bbolt"
 	BackendSQLite StorageBackend = "sqlite"
 )
+
+// TileMetadata 瓦片元数据
+type TileMetadata struct {
+	Epoch      int  `json:"epoch"`
+	ProviderID *int `json:"provider_id,omitempty"`
+}
+
+// encodeTileDataWithMetadata 将原始数据和元数据编码为字节流
+func encodeTileDataWithMetadata(data []byte, metadata *TileMetadata) ([]byte, error) {
+	if metadata == nil {
+		// 如果没有元数据，直接返回原始数据
+		return data, nil
+	}
+
+	// 创建缓冲区
+	buf := new(bytes.Buffer)
+
+	// 写入元数据标志（1字节）
+	hasMetadata := byte(1)
+	if metadata.Epoch == 0 && metadata.ProviderID == nil {
+		hasMetadata = 0
+	}
+	if err := buf.WriteByte(hasMetadata); err != nil {
+		return nil, err
+	}
+
+	// 如果有元数据，写入元数据
+	if hasMetadata == 1 {
+		// 写入 epoch（4字节）
+		if err := binary.Write(buf, binary.BigEndian, int32(metadata.Epoch)); err != nil {
+			return nil, err
+		}
+
+		// 写入 provider_id 标志（1字节）
+		hasProviderID := byte(0)
+		if metadata.ProviderID != nil {
+			hasProviderID = 1
+		}
+		if err := buf.WriteByte(hasProviderID); err != nil {
+			return nil, err
+		}
+
+		// 如果有 provider_id，写入 provider_id（4字节）
+		if hasProviderID == 1 {
+			if err := binary.Write(buf, binary.BigEndian, int32(*metadata.ProviderID)); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// 写入原始数据长度（4字节）
+	if err := binary.Write(buf, binary.BigEndian, int32(len(data))); err != nil {
+		return nil, err
+	}
+
+	// 写入原始数据
+	if _, err := buf.Write(data); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+// decodeTileDataWithMetadata 从字节流中解码出原始数据和元数据
+func decodeTileDataWithMetadata(encoded []byte) ([]byte, *TileMetadata, error) {
+	if len(encoded) == 0 {
+		return nil, nil, errors.New("empty data")
+	}
+
+	buf := bytes.NewReader(encoded)
+
+	// 读取元数据标志
+	hasMetadata, err := buf.ReadByte()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var metadata *TileMetadata
+
+	// 如果有元数据，读取元数据
+	if hasMetadata == 1 {
+		metadata = &TileMetadata{}
+
+		// 读取 epoch
+		var epoch int32
+		if err := binary.Read(buf, binary.BigEndian, &epoch); err != nil {
+			return nil, nil, err
+		}
+		metadata.Epoch = int(epoch)
+
+		// 读取 provider_id 标志
+		hasProviderID, err := buf.ReadByte()
+		if err != nil {
+			return nil, nil, err
+		}
+
+		// 如果有 provider_id，读取 provider_id
+		if hasProviderID == 1 {
+			var providerID int32
+			if err := binary.Read(buf, binary.BigEndian, &providerID); err != nil {
+				return nil, nil, err
+			}
+			providerIDVal := int(providerID)
+			metadata.ProviderID = &providerIDVal
+		}
+	}
+
+	// 读取原始数据长度
+	var dataLen int32
+	if err := binary.Read(buf, binary.BigEndian, &dataLen); err != nil {
+		return nil, nil, err
+	}
+
+	// 读取原始数据
+	data := make([]byte, dataLen)
+	if _, err := buf.Read(data); err != nil {
+		return nil, nil, err
+	}
+
+	return data, metadata, nil
+}
 
 // TileStorageConfig 瓦片存储配置
 type TileStorageConfig struct {
@@ -52,9 +175,11 @@ type TileStorage struct {
 
 // persistTask 持久化任务
 type persistTask struct {
-	dataType string
-	tilekey  string
-	value    []byte
+	dataType   string
+	tilekey    string
+	value      []byte
+	epoch      int
+	providerID *int
 }
 
 // NewTileStorage 创建瓦片存储管理器
@@ -123,6 +248,8 @@ func (ts *TileStorage) startPersistWorker() {
 
 		batch := make(map[string][]byte)
 		dataTypeMap := make(map[string]string) // tilekey -> dataType
+		epochMap := make(map[string]int)       // tilekey -> epoch
+		providerIDMap := make(map[string]*int) // tilekey -> providerID
 
 		flushBatch := func() {
 			if len(batch) == 0 {
@@ -144,15 +271,20 @@ func (ts *TileStorage) startPersistWorker() {
 				var persistErr error
 				switch ts.config.Backend {
 				case BackendBBolt:
+					// 对于 BBolt，我们暂时使用不带元数据的批量存储
+					// TODO: 实现带元数据的 BBolt 批量存储
 					persistErr = PutTilesBBoltBatch(ts.config.DBDir, dataType, records)
 				case BackendSQLite:
-					// SQLite 逐条写入（批量优化不明显）
-					for tilekey, value := range records {
-						if err := PutTileSQLite(ts.config.DBDir, dataType, tilekey, value); err != nil {
-							persistErr = err
-							break
-						}
+					// 获取该批次的元数据（假设同一批次的数据具有相同的元数据）
+					var epoch int
+					var providerID *int
+					for tilekey := range records {
+						epoch = epochMap[tilekey]
+						providerID = providerIDMap[tilekey]
+						break
 					}
+					// 使用带元数据的批量存储
+					persistErr = PutTilesSQLiteBatchWithMetadata(ts.config.DBDir, dataType, records, epoch, providerID)
 				}
 
 				// 持久化成功后清理 Redis
@@ -169,6 +301,8 @@ func (ts *TileStorage) startPersistWorker() {
 			// 清空批次
 			batch = make(map[string][]byte)
 			dataTypeMap = make(map[string]string)
+			epochMap = make(map[string]int)
+			providerIDMap = make(map[string]*int)
 		}
 
 		for {
@@ -183,6 +317,8 @@ func (ts *TileStorage) startPersistWorker() {
 				// 收集任务到批次
 				batch[task.tilekey] = task.value
 				dataTypeMap[task.tilekey] = task.dataType
+				epochMap[task.tilekey] = task.epoch
+				providerIDMap[task.tilekey] = task.providerID
 
 				// 达到批次大小，立即刷新
 				if len(batch) >= ts.config.PersistBatchSize {
@@ -249,6 +385,89 @@ func (ts *TileStorage) Put(dataType, tilekey string, value []byte) error {
 	return nil
 }
 
+// PutWithMetadata 写入瓦片数据（带元数据信息）
+func (ts *TileStorage) PutWithMetadata(dataType, tilekey string, value []byte, epoch int, providerID *int) error {
+	if ts.config.EnableAsyncPersist {
+		// 异步模式：先写 Redis，再异步持久化
+		if !ts.config.EnableCache {
+			return errors.New("异步持久化模式必须启用 Redis 缓存")
+		}
+
+		// 1. 立即写入 Redis（极速响应）
+		// 对于 Redis，我们需要将元数据编码到数据中
+		metadata := &TileMetadata{
+			Epoch:      epoch,
+			ProviderID: providerID,
+		}
+		encodedData, err := encodeTileDataWithMetadata(value, metadata)
+		if err != nil {
+			return fmt.Errorf("编码数据失败: %w", err)
+		}
+
+		if err := PutTileRedis(ts.config.RedisAddr, dataType, tilekey, encodedData, ts.config.CacheExpiration); err != nil {
+			return fmt.Errorf("Redis 写入失败: %w", err)
+		}
+
+		// 2. 异步提交持久化任务（非阻塞）
+		select {
+		case ts.persistQueue <- &persistTask{
+			dataType:   dataType,
+			tilekey:    tilekey,
+			value:      value,
+			epoch:      epoch,
+			providerID: providerID,
+		}:
+			// 任务提交成功
+		default:
+			// 队列满，记录警告但不阻塞（Redis 已写入）
+			// 可选：集成日志系统
+		}
+
+		return nil
+	}
+
+	// 同步模式：先持久化，再缓存
+	var persistErr error
+	switch ts.config.Backend {
+	case BackendBBolt:
+		// 对于 BBolt，我们需要将元数据编码到数据中
+		metadata := &TileMetadata{
+			Epoch:      epoch,
+			ProviderID: providerID,
+		}
+		encodedData, err := encodeTileDataWithMetadata(value, metadata)
+		if err != nil {
+			return fmt.Errorf("编码数据失败: %w", err)
+		}
+		persistErr = PutTileBBolt(ts.config.DBDir, dataType, tilekey, encodedData)
+	case BackendSQLite:
+		persistErr = PutTileSQLiteWithMetadata(ts.config.DBDir, dataType, tilekey, value, epoch, providerID)
+	}
+
+	if persistErr != nil {
+		return fmt.Errorf("持久化写入失败: %w", persistErr)
+	}
+
+	// 写入 Redis 缓存（失败不影响整体）
+	if ts.config.EnableCache {
+		// 对于 Redis，我们需要将元数据编码到数据中
+		metadata := &TileMetadata{
+			Epoch:      epoch,
+			ProviderID: providerID,
+		}
+		encodedData, err := encodeTileDataWithMetadata(value, metadata)
+		if err != nil {
+			return fmt.Errorf("编码数据失败: %w", err)
+		}
+
+		if err := PutTileRedis(ts.config.RedisAddr, dataType, tilekey, encodedData, ts.config.CacheExpiration); err != nil {
+			// 缓存写入失败，仅记录日志，不返回错误
+		}
+	}
+
+	return nil
+}
+
 // PutBatch 批量写入瓦片数据（先写持久化，再写缓存）
 func (ts *TileStorage) PutBatch(dataType string, records map[string][]byte) error {
 	// 1. 批量写入持久化存储
@@ -271,6 +490,33 @@ func (ts *TileStorage) PutBatch(dataType string, records map[string][]byte) erro
 
 	// 2. 批量写入 Redis 缓存（失败不影响整体）
 	if ts.config.EnableCache {
+		if err := PutTilesRedisBatch(ts.config.RedisAddr, dataType, records, ts.config.CacheExpiration); err != nil {
+			// 缓存写入失败，仅记录日志
+		}
+	}
+
+	return nil
+}
+
+// PutBatchWithMetadata 批量写入瓦片数据（带元数据信息）
+func (ts *TileStorage) PutBatchWithMetadata(dataType string, records map[string][]byte, epoch int, providerID *int) error {
+	// 1. 批量写入持久化存储
+	var persistErr error
+	switch ts.config.Backend {
+	case BackendBBolt:
+		// TODO: 实现 BBolt 的批量存储带元数据功能
+		persistErr = PutTilesBBoltBatch(ts.config.DBDir, dataType, records)
+	case BackendSQLite:
+		persistErr = PutTilesSQLiteBatchWithMetadata(ts.config.DBDir, dataType, records, epoch, providerID)
+	}
+
+	if persistErr != nil {
+		return fmt.Errorf("持久化批量写入失败: %w", persistErr)
+	}
+
+	// 2. 批量写入 Redis 缓存（失败不影响整体）
+	if ts.config.EnableCache {
+		// TODO: 实现 Redis 的批量存储带元数据功能
 		if err := PutTilesRedisBatch(ts.config.RedisAddr, dataType, records, ts.config.CacheExpiration); err != nil {
 			// 缓存写入失败，仅记录日志
 		}

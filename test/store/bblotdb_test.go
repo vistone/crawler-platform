@@ -1,4 +1,4 @@
-package Store_test
+package Store_test_test
 
 import (
 	"math/rand"
@@ -9,6 +9,7 @@ import (
 
 	"crawler-platform/Store"
 )
+
 
 // TestBBoltPutAndGet 测试 bbolt 写入与读取
 func TestBBoltPutAndGet(t *testing.T) {
@@ -48,7 +49,7 @@ func TestBBoltPutAndGet(t *testing.T) {
 			}
 
 			// 打印生成的数据库路径（验证分层策略）
-			dbPath := Store.GetDBPathForTest(tmpDir, dataType, tc.tilekey)
+			dbPath := Store.GetDBPathForTest(tmpDir, dataType, tc.tilekey, "bbolt")
 			t.Logf("tilekey=%s (长度%d) -> 数据库路径: %s", tc.tilekey, len(tc.tilekey), dbPath)
 		})
 	}
@@ -96,7 +97,7 @@ func TestBBoltCorruptRecovery(t *testing.T) {
 	}
 
 	// 获取数据库文件路径并关闭连接
-	dbPath := Store.GetDBPathForTest(tmpDir, dataType, tilekey)
+	dbPath := Store.GetDBPathForTest(tmpDir, dataType, tilekey, "bbolt")
 	if err := Store.CloseAllBBolt(); err != nil {
 		t.Fatalf("关闭连接失败: %v", err)
 	}

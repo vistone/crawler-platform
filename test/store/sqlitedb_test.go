@@ -48,7 +48,7 @@ func TestSQLitePutAndGet(t *testing.T) {
 			}
 
 			// 打印生成的数据库路径（验证分层策略）
-			dbPath := Store.GetDBPathForTest(tmpDir, dataType, tc.tilekey)
+			dbPath := Store.GetDBPathForTest(tmpDir, dataType, tc.tilekey, "sqlite")
 			t.Logf("tilekey=%s (长度%d) -> 数据库路径: %s", tc.tilekey, len(tc.tilekey), dbPath)
 		})
 	}
@@ -134,7 +134,7 @@ func TestSQLiteCorruptRecovery(t *testing.T) {
 	}
 
 	// 获取数据库文件路径并关闭连接
-	dbPath := Store.GetDBPathForTest(tmpDir, dataType, tilekey)
+	dbPath := Store.GetDBPathForTest(tmpDir, dataType, tilekey, "sqlite")
 	if err := Store.CloseAllSQLite(); err != nil {
 		t.Fatalf("关闭连接失败: %v", err)
 	}
@@ -179,19 +179,19 @@ func TestSQLitePathStrategy(t *testing.T) {
 		tilekey      string
 		expectedPath string
 	}{
-		{"012", tmpDir + "/imagery/base.g3db"},                         // 长度3: 基础层
-		{"01230123", tmpDir + "/imagery/base.g3db"},                    // 长度8: 基础层
-		{"012301230", tmpDir + "/imagery/8/0123.g3db"},                 // 长度9: 8/目录管理
-		{"012301230123", tmpDir + "/imagery/8/0123.g3db"},              // 长度12: 8/目录管理
-		{"0123012301230", tmpDir + "/imagery/12/0123.g3db"},            // 长度13: 12/目录管理
-		{"0123012301230123", tmpDir + "/imagery/12/0123.g3db"},         // 长度16: 12/目录管理
-		{"01230123012301230", tmpDir + "/imagery/17/0123.g3db"},        // 长度17: 独立目录
-		{"012301230123012301230123", tmpDir + "/imagery/24/0123.g3db"}, // 长度24: 独立目录
+		{"012", tmpDir + "/sqlite/imagery/base.g3db"},                         // 长度3: 基础层
+		{"01230123", tmpDir + "/sqlite/imagery/base.g3db"},                    // 长度8: 基础层
+		{"012301230", tmpDir + "/sqlite/imagery/8/0123.g3db"},                 // 长度9: 8/目录管理
+		{"012301230123", tmpDir + "/sqlite/imagery/8/0123.g3db"},              // 长度12: 8/目录管理
+		{"0123012301230", tmpDir + "/sqlite/imagery/12/0123.g3db"},            // 长度13: 12/目录管理
+		{"0123012301230123", tmpDir + "/sqlite/imagery/12/0123.g3db"},         // 长度16: 12/目录管理
+		{"01230123012301230", tmpDir + "/sqlite/imagery/17/0123.g3db"},        // 长度17: 独立目录
+		{"012301230123012301230123", tmpDir + "/sqlite/imagery/24/0123.g3db"}, // 长度24: 独立目录
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.tilekey, func(t *testing.T) {
-			got := Store.GetDBPathForTest(tmpDir, dataType, tc.tilekey)
+			got := Store.GetDBPathForTest(tmpDir, dataType, tc.tilekey, "sqlite")
 			if got != tc.expectedPath {
 				t.Errorf("路径不匹配:\n  got:  %s\n  want: %s", got, tc.expectedPath)
 			} else {

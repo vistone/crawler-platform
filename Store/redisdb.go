@@ -322,6 +322,34 @@ func GetMetadata(addr, dataType string) (map[string]string, error) {
 	return client.HGetAll(ctx, key).Result()
 }
 
+// PutTileRedisWithMetadata 写入单条数据到 Redis（带元数据）
+// addr: Redis 地址（如 "localhost:6379"），为空则使用默认
+// dataType: 数据类型（imagery/terrain/vector）
+// tilekey: 唯一标识
+// value: 负载数据
+// metadata: 元数据
+// expiration: 过期时间，0 表示永不过期
+func PutTileRedisWithMetadata(addr, dataType, tilekey string, value []byte, metadata *TileMetadata, expiration time.Duration) error {
+	// 编码数据和元数据
+	encodedData, err := encodeTileDataWithMetadata(value, metadata)
+	if err != nil {
+		return err
+	}
+
+	client, err := defaultRedisManager.getOrInitClientForDataType(addr, dataType)
+	if err != nil {
+		return err
+	}
+
+	// 构建 Redis key
+	key := buildRedisKey(dataType, tilekey)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	return client.Set(ctx, key, encodedData, expiration).Err()
+}
+
 // PutTileRedis 写入单条数据到 Redis（使用压缩 tilekey）
 // addr: Redis 地址（如 "localhost:6379"），为空则使用默认
 // dataType: 数据类型（imagery/terrain/vector）

@@ -1,0 +1,35 @@
+{
+  "tilekey": "0",
+  "level": 1,
+  "data": "dGVzdCBkYXRh",
+  "imagery_list": [
+    {
+      "tilekey": "00",
+      "version": 1019,
+      "provider": 124,
+      "url": "/flatfile?f1-00-i.1019"
+    },
+    {
+      "tilekey": "01",
+      "version": 1019,
+      "provider": 124,
+      "url": "/flatfile?f1-01-i.1019"
+    }
+  ],
+  "terrain_list": [
+    {
+      "tilekey": "00",
+      "version": 1020,
+      "url": "/flatfile?f1c-00-t.1020"
+    }
+  ],
+  "vector_list": [],
+  "q2_list": [
+    {
+      "tilekey": "00",
+      "version": 1029,
+      "url": "/flatfile?q2-00-q.1029"
+    }
+  ],
+  "success": true
+}

@@ -43,7 +43,7 @@ func geDecrypt(data []byte, key []byte) {
 	GeDecrypt(data, key)
 }
 
-// 解包（含可选解密）GE Zlib 数据：
+// UnpackGEZlib 解包（含可选解密）GE Zlib 数据：
 // - 若前4字节为加密的ZLIB魔法数，则先解密再判断
 // - 若为解密后的ZLIB魔法数，则按zlib流解压 payload
 // - 其他情况直接返回原数据副本

@@ -107,6 +107,13 @@ func CompressTileKeyToUint64(tilekey string) (uint64, error) {
 	return bits | uint64(lvl), nil
 }
 
+// EncodeKeyBigEndian 将 uint64 主键编码为 8 字节大端
+func EncodeKeyBigEndian(id uint64) []byte {
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], id)
+	return buf[:]
+}
+
 // encodeKeyBigEndian 将 uint64 主键编码为 8 字节大端
 func encodeKeyBigEndian(id uint64) []byte {
 	var buf [8]byte
@@ -114,11 +121,48 @@ func encodeKeyBigEndian(id uint64) []byte {
 	return buf[:]
 }
 
+// PutTileBBoltWithMetadata 写入单条数据（带元数据）：以压缩后的 tilekey 作为 bbolt 的 key
+// dbdir: 数据库根目录；dataType: 数据类型（imagery/terrain/vector）；tilekey: 唯一标识；value: 负载数据；metadata: 元数据
+func PutTileBBoltWithMetadata(dbdir, dataType, tilekey string, value []byte, metadata *TileMetadata) error {
+	// 生成数据库文件路径（集合/分层策略在 getDBPath 内实现）
+	dbPath := getDBPath(dbdir, dataType, tilekey, "bbolt") // 指定存储类型为bbolt
+
+	// 打开连接（复用连接池）
+	db, err := defaultBoltManager.getOrOpenDB(dbPath)
+	if err != nil {
+		return err
+	}
+
+	// 编码数据和元数据
+	encodedData, err := encodeTileDataWithMetadata(value, metadata)
+	if err != nil {
+		return err
+	}
+
+	// 压缩 tilekey 以获得唯一、紧凑的主键
+	tileID, err := CompressTileKeyToUint64(tilekey)
+	if err != nil {
+		return err
+	}
+	key := encodeKeyBigEndian(tileID)
+
+	// 使用 dataType 作为桶名，便于分类管理
+	bucketName := []byte(strings.ToLower(dataType))
+
+	return db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists(bucketName)
+		if err != nil {
+			return err
+		}
+		return b.Put(key, encodedData)
+	})
+}
+
 // PutTileBBolt 写入单条数据：以压缩后的 tilekey 作为 bbolt 的 key
 // dbdir: 数据库根目录；dataType: 数据类型（imagery/terrain/vector）；tilekey: 唯一标识；value: 负载数据
 func PutTileBBolt(dbdir, dataType, tilekey string, value []byte) error {
 	// 生成数据库文件路径（集合/分层策略在 getDBPath 内实现）
-	dbPath := getDBPath(dbdir, dataType, tilekey)
+	dbPath := getDBPath(dbdir, dataType, tilekey, "bbolt") // 指定存储类型为bbolt
 
 	// 打开连接（复用连接池）
 	db, err := defaultBoltManager.getOrOpenDB(dbPath)
@@ -155,7 +199,7 @@ func PutTilesBBoltBatch(dbdir, dataType string, records map[string][]byte) error
 	// 按数据库路径分组（不同层级可能在不同数据库文件）
 	grouped := make(map[string]map[string][]byte)
 	for tilekey, value := range records {
-		dbPath := getDBPath(dbdir, dataType, tilekey)
+		dbPath := getDBPath(dbdir, dataType, tilekey, "bbolt") // 指定存储类型为bbolt
 		if grouped[dbPath] == nil {
 			grouped[dbPath] = make(map[string][]byte)
 		}
@@ -199,9 +243,9 @@ func PutTilesBBoltBatch(dbdir, dataType string, records map[string][]byte) error
 	return nil
 }
 
-// GetTileBBolt 查询单条数据：以压缩后的 tilekey 作为 bbolt 的 key
+// GetTileBBolt 读取单条数据
 func GetTileBBolt(dbdir, dataType, tilekey string) ([]byte, error) {
-	dbPath := getDBPath(dbdir, dataType, tilekey)
+	dbPath := getDBPath(dbdir, dataType, tilekey, "bbolt") // 指定存储类型为bbolt
 	db, err := defaultBoltManager.getOrOpenDB(dbPath)
 	if err != nil {
 		return nil, err
@@ -212,47 +256,48 @@ func GetTileBBolt(dbdir, dataType, tilekey string) ([]byte, error) {
 		return nil, err
 	}
 	key := encodeKeyBigEndian(tileID)
+
 	bucketName := []byte(strings.ToLower(dataType))
 
-	var out []byte
+	var val []byte
 	err = db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketName)
 		if b == nil {
-			return errors.New("bucket 不存在: " + string(bucketName))
+			return errors.New("bucket not found")
 		}
-		val := b.Get(key)
+		val = b.Get(key)
 		if val == nil {
-			return errors.New("记录不存在")
+			return errors.New("key not found")
 		}
-		// 复制一份返回（避免 bbolt 的页面复用导致外部持有数据失效）
-		out = make([]byte, len(val))
-		copy(out, val)
 		return nil
 	})
+
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	return val, nil
 }
 
 // DeleteTileBBolt 删除单条数据
 func DeleteTileBBolt(dbdir, dataType, tilekey string) error {
-	dbPath := getDBPath(dbdir, dataType, tilekey)
+	dbPath := getDBPath(dbdir, dataType, tilekey, "bbolt") // 指定存储类型为bbolt
 	db, err := defaultBoltManager.getOrOpenDB(dbPath)
 	if err != nil {
 		return err
 	}
+
 	tileID, err := CompressTileKeyToUint64(tilekey)
 	if err != nil {
 		return err
 	}
 	key := encodeKeyBigEndian(tileID)
+
 	bucketName := []byte(strings.ToLower(dataType))
 
 	return db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketName)
 		if b == nil {
-			return errors.New("bucket 不存在: " + string(bucketName))
+			return nil // bucket不存在，视为删除成功
 		}
 		return b.Delete(key)
 	})
