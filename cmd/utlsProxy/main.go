@@ -38,7 +38,7 @@ type UTLSProxy struct {
 	config       *ProxyConfig
 	connPool     *utlsclient.UTLSHotConnPool
 	quicListener *quic.Listener
-	handlers     map[*quic.Conn]*TUNHandler
+	handlers     map[*quic.Conn]*IPTunnelHandler
 	handlersMu   sync.RWMutex
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -67,11 +67,11 @@ func NewUTLSProxy(config *ProxyConfig) (*UTLSProxy, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	proxy := &UTLSProxy{
-		config:    config,
-		connPool:  connPool,
-		handlers:  make(map[*quic.Conn]*TUNHandler),
-		ctx:       ctx,
-		cancel:    cancel,
+		config:   config,
+		connPool: connPool,
+		handlers: make(map[*quic.Conn]*IPTunnelHandler),
+		ctx:      ctx,
+		cancel:   cancel,
 	}
 
 	return proxy, nil
@@ -157,14 +157,14 @@ func (p *UTLSProxy) handleConnection(conn *quic.Conn) {
 			delete(p.handlers, conn)
 		}
 		p.handlersMu.Unlock()
-		
+
 		conn.CloseWithError(0, "连接关闭")
 	}()
 
 	projlogger.Debug("新客户端连接: %s", conn.RemoteAddr())
 
-	// 创建TUN处理器
-	handler := NewTUNHandler(p, conn)
+	// 创建真正的IP层TUN处理器（而不是TCP代理）
+	handler := NewIPTunnelHandler(p, conn)
 	
 	// 注册handler
 	p.handlersMu.Lock()
