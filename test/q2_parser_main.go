@@ -17,11 +17,11 @@ func main() {
 	fmt.Printf("原始数据大小: %d 字节\n", len(data))
 	
 	// 尝试使用不同的参数解析 q2 数据
-	q2Response, err := GoogleEarth.NewQ2Parser().Parse(data, "0", true, "")
+	q2Response, err := GoogleEarth.NewQ2Parser().Parse(data, "0", true)
 	if err != nil {
 		log.Printf("使用 rootNode=true 解析 q2 数据失败: %v", err)
 		// 尝试另一种方式
-		q2Response, err = GoogleEarth.NewQ2Parser().Parse(data, "0", false, "")
+		q2Response, err = GoogleEarth.NewQ2Parser().Parse(data, "0", false)
 		if err != nil {
 			log.Fatalf("使用 rootNode=false 解析 q2 数据也失败: %v", err)
 		} else {

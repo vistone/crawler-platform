@@ -19,7 +19,7 @@ import (
 // TestParseQ2Body_EmptyBody 测试空数据解析
 func TestParseQ2Body_EmptyBody(t *testing.T) {
 	body := []byte{}
-	jsonStr, err := GoogleEarth.ParseQ2Body(body, "0", true, "https://kh.google.com")
+	jsonStr, err := GoogleEarth.ParseQ2Body(body, "0", true)
 
 	// 应该返回错误，但不应该panic
 	if err != nil {
@@ -47,7 +47,7 @@ func TestParseQ2Body_EmptyBody(t *testing.T) {
 func TestParseQ2Body_InvalidData(t *testing.T) {
 	// 随机数据，不是有效的Q2格式
 	body := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05}
-	jsonStr, err := GoogleEarth.ParseQ2Body(body, "0", true, "https://kh.google.com")
+	jsonStr, err := GoogleEarth.ParseQ2Body(body, "0", true)
 
 	if err != nil {
 		t.Logf("Error parsing invalid data: %v", err)
@@ -122,7 +122,7 @@ func createMockQ2Data() []byte {
 // TestParseQ2Body_ValidData 测试有效的Q2数据解析
 func TestParseQ2Body_ValidData(t *testing.T) {
 	body := createMockQ2Data()
-	jsonStr, err := GoogleEarth.ParseQ2Body(body, "0", true, "https://kh.google.com")
+	jsonStr, err := GoogleEarth.ParseQ2Body(body, "0", true)
 
 	if err != nil {
 		t.Fatalf("Failed to parse valid Q2 data: %v", err)
@@ -169,7 +169,7 @@ func TestParseQ2Body_RootNodeVsNonRoot(t *testing.T) {
 	body := createMockQ2Data()
 
 	// 测试根节点
-	jsonStr1, err := GoogleEarth.ParseQ2Body(body, "0", true, "")
+	jsonStr1, err := GoogleEarth.ParseQ2Body(body, "0", true)
 	if err != nil {
 		t.Fatalf("Failed to parse as root node: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestParseQ2Body_RootNodeVsNonRoot(t *testing.T) {
 	json.Unmarshal([]byte(jsonStr1), &response1)
 
 	// 测试非根节点
-	jsonStr2, err := GoogleEarth.ParseQ2Body(body, "0123", false, "")
+	jsonStr2, err := GoogleEarth.ParseQ2Body(body, "0123", false)
 	if err != nil {
 		t.Fatalf("Failed to parse as non-root node: %v", err)
 	}
@@ -198,9 +198,8 @@ func TestParseQ2Body_RootNodeVsNonRoot(t *testing.T) {
 // TestParseQ2Body_WithBaseURL 测试带URL构造的解析
 func TestParseQ2Body_WithBaseURL(t *testing.T) {
 	body := createMockQ2Data()
-	baseURL := "https://kh.google.com"
 
-	jsonStr, err := GoogleEarth.ParseQ2Body(body, "0", true, baseURL)
+	jsonStr, err := GoogleEarth.ParseQ2Body(body, "0", true)
 	if err != nil {
 		t.Fatalf("Failed to parse: %v", err)
 	}
@@ -249,7 +248,7 @@ func TestParseQ2Body_WithBaseURL(t *testing.T) {
 func TestParseQ2Body_WithoutBaseURL(t *testing.T) {
 	body := createMockQ2Data()
 
-	jsonStr, err := GoogleEarth.ParseQ2Body(body, "0", true, "")
+	jsonStr, err := GoogleEarth.ParseQ2Body(body, "0", true)
 	if err != nil {
 		t.Fatalf("Failed to parse: %v", err)
 	}
@@ -454,7 +453,7 @@ func TestParseQ2Body_DifferentTilekeys(t *testing.T) {
 	}
 
 	for _, tk := range tilekeys {
-		jsonStr, err := GoogleEarth.ParseQ2Body(body, tk.tilekey, tk.rootNode, "https://kh.google.com")
+		jsonStr, err := GoogleEarth.ParseQ2Body(body, tk.tilekey, tk.rootNode)
 		if err != nil {
 			t.Errorf("Failed to parse with tilekey=%s: %v", tk.tilekey, err)
 			continue
@@ -661,7 +660,6 @@ func TestParseQ2Body_RealData(t *testing.T) {
 		decryptedBody,
 		tilekey,
 		true, // 根节点
-		"https://kh.google.com",
 	)
 	if err != nil {
 		t.Fatalf("解析 Q2 数据失败: %v", err)
