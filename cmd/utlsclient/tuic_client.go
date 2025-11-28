@@ -15,6 +15,7 @@ import (
 	"time"
 
 	projlogger "crawler-platform/logger"
+
 	"github.com/quic-go/quic-go"
 )
 
@@ -62,7 +63,7 @@ func (c *TUICClient) Connect() error {
 	// 创建TLS配置（跳过证书验证，因为可能使用自签名证书）
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: true,
-		NextProtos:          []string{"tuic"},
+		NextProtos:         []string{"tuic"},
 	}
 
 	// 创建QUIC配置
@@ -180,12 +181,12 @@ func (c *TUICClient) buildTUICRequest(targetAddr string, httpReqData []byte) ([]
 	payload = append(payload, addrType)
 	payload = append(payload, addrLen)
 	payload = append(payload, hostBytes...)
-	
+
 	// 添加端口（大端序）
 	portBytes := make([]byte, 2)
 	binary.BigEndian.PutUint16(portBytes, port)
 	payload = append(payload, portBytes...)
-	
+
 	// 添加HTTP请求数据
 	payload = append(payload, httpReqData...)
 
@@ -197,12 +198,12 @@ func (c *TUICClient) buildTUICRequest(targetAddr string, httpReqData []byte) ([]
 	request := make([]byte, 0, 4+len(payload))
 	request = append(request, version)
 	request = append(request, command)
-	
+
 	// 添加长度（大端序）
 	lenBytes := make([]byte, 2)
 	binary.BigEndian.PutUint16(lenBytes, payloadLen)
 	request = append(request, lenBytes...)
-	
+
 	// 添加payload
 	request = append(request, payload...)
 
@@ -279,7 +280,7 @@ func tuicMain(proxyAddr, token, targetURL, method string, timeout time.Duration)
 	// 显示响应
 	fmt.Printf("状态: %s\n", httpResp.Status)
 	fmt.Printf("状态码: %d\n", httpResp.StatusCode)
-	
+
 	// 读取响应体
 	body, err := io.ReadAll(httpResp.Body)
 	if err != nil {

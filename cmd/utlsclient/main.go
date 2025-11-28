@@ -37,8 +37,16 @@ func main() {
 		os.Exit(0)
 	}
 
+	// 检查是否是并发测试模式（需要在flag.Parse之前定义）
+	concurrentTest := flag.Bool("concurrent-test", false, "运行并发测试")
+	
 	// 如果使用代理模式，调用TUIC客户端
-	if *useProxy || *proxy != "" {
+	if *useProxy || *proxy != "" || *concurrentTest {
+		if *concurrentTest {
+			ConcurrentTestMain()
+			return
+		}
+		
 		// 验证必需参数
 		if *proxy == "" {
 			fmt.Fprintf(os.Stderr, "错误: 使用代理模式时必须提供 -proxy 参数\n")
