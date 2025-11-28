@@ -19,17 +19,42 @@ const Version = "0.0.26"
 
 func main() {
 	// 命令行参数
-	url := flag.String("url", "", "目标 HTTPS URL，例如 https://example.com/path")
-	method := flag.String("X", "GET", "HTTP 方法：GET/POST/HEAD 等")
-	ua := flag.String("ua", "", "自定义 User-Agent")
-	timeout := flag.Duration("timeout", 30*time.Second, "请求超时时间")
-	head := flag.Bool("head", false, "使用 HEAD 请求进行快速探测")
-	version := flag.Bool("version", false, "显示版本号")
+	var (
+		url      = flag.String("url", "", "目标 HTTPS URL，例如 https://example.com/path")
+		method   = flag.String("X", "GET", "HTTP 方法：GET/POST/HEAD 等")
+		ua       = flag.String("ua", "", "自定义 User-Agent")
+		timeout  = flag.Duration("timeout", 30*time.Second, "请求超时时间")
+		head     = flag.Bool("head", false, "使用 HEAD 请求进行快速探测")
+		version  = flag.Bool("version", false, "显示版本号")
+		proxy    = flag.String("proxy", "", "TUIC代理服务器地址 (host:port)，如果提供则通过代理发送请求")
+		token    = flag.String("token", "", "TUIC认证令牌（使用代理时必需）")
+		useProxy = flag.Bool("use-proxy", false, "使用TUIC代理模式")
+	)
 	flag.Parse()
 
 	if *version {
 		fmt.Printf("crawler-platform v%s\n", Version)
 		os.Exit(0)
+	}
+
+	// 如果使用代理模式，调用TUIC客户端
+	if *useProxy || *proxy != "" {
+		// 验证必需参数
+		if *proxy == "" {
+			fmt.Fprintf(os.Stderr, "错误: 使用代理模式时必须提供 -proxy 参数\n")
+			os.Exit(1)
+		}
+		if *token == "" {
+			fmt.Fprintf(os.Stderr, "错误: 使用代理模式时必须提供 -token 参数\n")
+			os.Exit(1)
+		}
+		if *url == "" {
+			fmt.Fprintf(os.Stderr, "错误: 使用代理模式时必须提供 -url 参数\n")
+			os.Exit(1)
+		}
+		// 调用TUIC客户端主函数
+		tuicMain(*proxy, *token, *url, *method, *timeout)
+		return
 	}
 
 	if *url == "" {
