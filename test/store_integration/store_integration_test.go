@@ -7,12 +7,37 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"crawler-platform/Store"
 	_ "github.com/mattn/go-sqlite3"
+	miniredis "github.com/alicebob/miniredis/v2"
 )
+
+var (
+	embeddedRedisOnce   sync.Once
+	embeddedRedisAddr   string
+	embeddedRedisServer *miniredis.Miniredis
+)
+
+// getRedisAddr 获取 Redis 地址（优先环境变量，否则使用内嵌 Redis）
+func getRedisAddr() string {
+	addr := os.Getenv("REDIS_ADDR")
+	if addr == "" {
+		embeddedRedisOnce.Do(func() {
+			server, err := miniredis.Run()
+			if err != nil {
+				panic(fmt.Sprintf("无法启动内嵌 Redis: %v", err))
+			}
+			embeddedRedisServer = server
+			embeddedRedisAddr = server.Addr()
+		})
+		return embeddedRedisAddr
+	}
+	return addr
+}
 
 // TestRawDataStorageIntegration 测试原始数据的存储集成
 // 直接存储从远程请求回来的原始格式数据（不解析、不处理）
@@ -203,7 +228,7 @@ func TestRawDataStorageIntegration(t *testing.T) {
 	config := Store.TileStorageConfig{
 		Backend:                Store.BackendSQLite,
 		DBDir:                  testDBDir,
-		RedisAddr:              "localhost:6379",
+		RedisAddr:              getRedisAddr(),
 		EnableCache:            true,
 		EnableAsyncPersist:     true,
 		PersistBatchSize:       100,
@@ -229,12 +254,35 @@ func TestRawDataStorageIntegration(t *testing.T) {
 		}
 		
 		if err := tileStorage.Put(dataType, tilekey, data); err != nil {
-			t.Errorf("添加异步任务失败 (tilekey %s): %v", tilekey, err)
+			t.Fatalf("添加异步任务失败 (tilekey %s): %v", tilekey, err)
 		}
 	}
 
-	// 等待异步处理完成
-	time.Sleep(200 * time.Millisecond)
+	// 等待异步处理完成（轮询检查数据是否已持久化，最多等待2秒）
+	maxWait := 2 * time.Second
+	checkInterval := 100 * time.Millisecond
+	waited := 0 * time.Millisecond
+	allPersisted := false
+	
+	for waited < maxWait {
+		allPersisted = true
+		for _, tilekey := range testTileKeys {
+			_, err := Store.GetTileSQLite(testDBDir, "imagery", tilekey)
+			if err != nil {
+				allPersisted = false
+				break
+			}
+		}
+		if allPersisted {
+			break
+		}
+		time.Sleep(checkInterval)
+		waited += checkInterval
+	}
+	
+	if !allPersisted {
+		t.Logf("警告: 等待 %v 后，部分数据仍未持久化，继续验证...", waited)
+	}
 
 	// 验证数据是否已持久化
 	for i, tilekey := range testTileKeys {

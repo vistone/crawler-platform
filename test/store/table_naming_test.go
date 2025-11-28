@@ -13,6 +13,11 @@ import (
 
 // TestTableNamingConvention 测试表命名规范修改
 func TestTableNamingConvention(t *testing.T) {
+	// 检查 sqlite3 命令是否可用
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skipf("跳过测试: sqlite3 命令不可用: %v", err)
+	}
+	
 	// 创建临时测试目录
 	tmpDir := t.TempDir()
 	tilekey := "01230123"
@@ -47,6 +52,10 @@ func TestTableNamingConvention(t *testing.T) {
 				cmd := exec.Command("sqlite3", dbPath, ".schema")
 				output, err := cmd.Output()
 				if err != nil {
+					// 如果 sqlite3 命令失败，跳过表结构验证
+					if _, lookErr := exec.LookPath("sqlite3"); lookErr != nil {
+						t.Skipf("跳过表结构验证: sqlite3 命令不可用: %v", lookErr)
+					}
 					t.Errorf("执行 sqlite3 命令失败: %v", err)
 				} else {
 					schema := string(output)

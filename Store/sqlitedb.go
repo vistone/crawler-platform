@@ -434,21 +434,21 @@ func PutTilesSQLiteBatchWithMetadata(dbdir, dataType string, records map[string]
 				INSERT INTO %s(tile_id, level, data) VALUES(?, ?, ?)
 				ON CONFLICT(tile_id) DO UPDATE SET level=excluded.level, data=excluded.data;
 			`, table))
-		} else {
-			tableName := dataType // 直接使用数据类型作为表名
-			// 处理 provider_id 为 NULL 的情况
-			if providerID == nil {
-				stmt, err = tx.Prepare(fmt.Sprintf(`
-					INSERT INTO %s(tile_id, epoch, provider_id, value) VALUES(?, ?, ?, NULL)
+			} else {
+				tableName := dataType // 直接使用数据类型作为表名
+				// 处理 provider_id 为 NULL 的情况
+				if providerID == nil {
+					stmt, err = tx.Prepare(fmt.Sprintf(`
+					INSERT INTO %s(tile_id, epoch, provider_id, value) VALUES(?, ?, NULL, ?)
 					ON CONFLICT(tile_id) DO UPDATE SET epoch=excluded.epoch, provider_id=excluded.provider_id, value=excluded.value;
 				`, tableName))
-			} else {
-				stmt, err = tx.Prepare(fmt.Sprintf(`
+				} else {
+					stmt, err = tx.Prepare(fmt.Sprintf(`
 					INSERT INTO %s(tile_id, epoch, provider_id, value) VALUES(?, ?, ?, ?)
 					ON CONFLICT(tile_id) DO UPDATE SET epoch=excluded.epoch, provider_id=excluded.provider_id, value=excluded.value;
 				`, tableName))
+				}
 			}
-		}
 		if err != nil {
 			tx.Rollback()
 			return err
@@ -473,7 +473,7 @@ func PutTilesSQLiteBatchWithMetadata(dbdir, dataType string, records map[string]
 			} else {
 				// 处理 provider_id 为 NULL 的情况
 				if providerID == nil {
-					if _, err := stmt.Exec(key, epoch, epoch, value); err != nil {
+					if _, err := stmt.Exec(key, epoch, value); err != nil {
 						tx.Rollback()
 						return err
 					}

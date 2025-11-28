@@ -146,7 +146,7 @@ func (c *UTLSClient) doHTTP2Request(ctx context.Context, req *http.Request) (*ht
 	c.conn.h2Mu.Lock()
 	var cc *http2.ClientConn
 	if c.conn.h2ClientConn != nil {
-		cc = c.conn.h2ClientConn.(*http2.ClientConn)
+		cc = c.conn.h2ClientConn
 		// 检查连接是否可用
 		if !cc.CanTakeNewRequest() {
 			cc.Close()

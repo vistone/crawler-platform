@@ -77,4 +77,8 @@ type HTTPClient interface {
 	Head(url string) (*http.Response, error)
 }
 
+// DNSUpdater 和 BlacklistManager 接口定义在各自的实现文件中
+// - DNSUpdater: 定义在 dns_updater.go
+// - BlacklistManager: 定义在 blacklist_manager.go
+
 // 日志接口与实现移至项目级 logger 包

@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,8 +16,8 @@ import (
 
 	projlogger "crawler-platform/logger"
 
-	"github.com/BurntSushi/toml"
 	utls "github.com/refraction-networking/utls"
+	"golang.org/x/net/http2"
 )
 
 // HotConnPool 热连接池接口，提供简单明确的调用方式
@@ -50,121 +49,60 @@ type HotConnPool interface {
 	Close() error
 }
 
-// ConfigFile 完整配置文件结构
-type ConfigFile struct {
-	Pool      PoolConfigSection `toml:"pool"`
-	Whitelist WhitelistSection  `toml:"whitelist"`
-	Blacklist BlacklistSection  `toml:"blacklist"`
-}
-
-// PoolConfigSection 连接池配置段
-type PoolConfigSection struct {
-	MaxConnections         int `toml:"max_connections"`
-	MaxConnsPerHost        int `toml:"max_conns_per_host"`
-	MaxIdleConns           int `toml:"max_idle_conns"`
-	ConnTimeout            int `toml:"conn_timeout"`
-	IdleTimeout            int `toml:"idle_timeout"`
-	MaxLifetime            int `toml:"max_lifetime"`
-	TestTimeout            int `toml:"test_timeout"`
-	HealthCheckInterval    int `toml:"health_check_interval"`
-	CleanupInterval        int `toml:"cleanup_interval"`
-	BlacklistCheckInterval int `toml:"blacklist_check_interval"`
-	DNSUpdateInterval      int `toml:"dns_update_interval"`
-	MaxRetries             int `toml:"max_retries"`
-}
-
-// WhitelistSection 白名单配置段
-type WhitelistSection struct {
-	IPs []string `toml:"ips"`
-}
-
-// BlacklistSection 黑名单配置段
-type BlacklistSection struct {
-	IPs []string `toml:"ips"`
-}
-
-// LoadConfigFromTOML 从TOML文件加载配置
+// LoadConfigFromTOML 从TOML文件加载配置（兼容性包装，内部调用config包）
+// 输入: configPath - 配置文件路径
+// 输出: *PoolConfig - 连接池配置, []string - 白名单IP列表, []string - 黑名单IP列表, error - 错误信息
 func LoadConfigFromTOML(configPath string) (*PoolConfig, []string, []string, error) {
-	var config ConfigFile
-
-	// 读取配置文件
-	data, err := os.ReadFile(configPath)
+	result, err := projconfig.LoadPoolConfigFromTOML(configPath)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("读取配置文件失败: %w", err)
-	}
-
-	// 解析TOML
-	if _, err := toml.Decode(string(data), &config); err != nil {
-		return nil, nil, nil, fmt.Errorf("解析TOML配置失败: %w", err)
-	}
-
-	// 转换为PoolConfig
-	poolConfig := &PoolConfig{
-		MaxConnections:         config.Pool.MaxConnections,
-		MaxConnsPerHost:        config.Pool.MaxConnsPerHost,
-		MaxIdleConns:           config.Pool.MaxIdleConns,
-		ConnTimeout:            time.Duration(config.Pool.ConnTimeout) * time.Second,
-		IdleTimeout:            time.Duration(config.Pool.IdleTimeout) * time.Second,
-		MaxLifetime:            time.Duration(config.Pool.MaxLifetime) * time.Second,
-		TestTimeout:            time.Duration(config.Pool.TestTimeout) * time.Second,
-		HealthCheckInterval:    time.Duration(config.Pool.HealthCheckInterval) * time.Second,
-		CleanupInterval:        time.Duration(config.Pool.CleanupInterval) * time.Second,
-		BlacklistCheckInterval: time.Duration(config.Pool.BlacklistCheckInterval) * time.Second,
-		DNSUpdateInterval:      time.Duration(config.Pool.DNSUpdateInterval) * time.Second,
-		MaxRetries:             config.Pool.MaxRetries,
-	}
-
-	// 验证配置
-	if poolConfig.MaxConnections <= 0 {
-		return nil, nil, nil, fmt.Errorf("max_connections 必须大于0")
-	}
-	if poolConfig.MaxConnsPerHost <= 0 {
-		return nil, nil, nil, fmt.Errorf("max_conns_per_host 必须大于0")
-	}
-	if poolConfig.ConnTimeout <= 0 {
-		return nil, nil, nil, fmt.Errorf("conn_timeout 必须大于0")
-	}
-
-	return poolConfig, config.Whitelist.IPs, config.Blacklist.IPs, nil
-}
-
-// LoadPoolConfigFromFile 从文件加载连接池配置（简化版本）
-func LoadPoolConfigFromFile(configPath string) (*PoolConfig, error) {
-	poolConfig, _, _, err := LoadConfigFromTOML(configPath)
-	return poolConfig, err
-}
-
-// LoadMergedPoolConfig 合并读取根目录 config.toml 与 config/config.toml，并转换为 PoolConfig 及白/黑名单
-func LoadMergedPoolConfig() (*PoolConfig, []string, []string, error) {
-	var cfgFile ConfigFile
-	if err := projconfig.LoadMergedInto(&cfgFile); err != nil {
 		return nil, nil, nil, err
 	}
-	poolConfig := &PoolConfig{
-		MaxConnections:         cfgFile.Pool.MaxConnections,
-		MaxConnsPerHost:        cfgFile.Pool.MaxConnsPerHost,
-		MaxIdleConns:           cfgFile.Pool.MaxIdleConns,
-		ConnTimeout:            time.Duration(cfgFile.Pool.ConnTimeout) * time.Second,
-		IdleTimeout:            time.Duration(cfgFile.Pool.IdleTimeout) * time.Second,
-		MaxLifetime:            time.Duration(cfgFile.Pool.MaxLifetime) * time.Second,
-		TestTimeout:            time.Duration(cfgFile.Pool.TestTimeout) * time.Second,
-		HealthCheckInterval:    time.Duration(cfgFile.Pool.HealthCheckInterval) * time.Second,
-		CleanupInterval:        time.Duration(cfgFile.Pool.CleanupInterval) * time.Second,
-		BlacklistCheckInterval: time.Duration(cfgFile.Pool.BlacklistCheckInterval) * time.Second,
-		DNSUpdateInterval:      time.Duration(cfgFile.Pool.DNSUpdateInterval) * time.Second,
-		MaxRetries:             cfgFile.Pool.MaxRetries,
+	return convertPoolConfigData(result), result.Whitelist, result.Blacklist, nil
+}
+
+// LoadPoolConfigFromFile 从文件加载连接池配置（简化版本，兼容性包装）
+// 输入: configPath - 配置文件路径
+// 输出: *PoolConfig - 连接池配置, error - 错误信息
+func LoadPoolConfigFromFile(configPath string) (*PoolConfig, error) {
+	result, err := projconfig.LoadPoolConfigFromTOML(configPath)
+	if err != nil {
+		return nil, err
 	}
-	// 基本校验复用
-	if poolConfig.MaxConnections <= 0 {
-		return nil, nil, nil, fmt.Errorf("max_connections 必须大于0")
+	return convertPoolConfigData(result), nil
+}
+
+// LoadMergedPoolConfig 合并读取根目录 config.toml 与 config/config.toml，并转换为 PoolConfig 及白/黑名单（兼容性包装）
+// 输出: *PoolConfig - 连接池配置, []string - 白名单IP列表, []string - 黑名单IP列表, error - 错误信息
+func LoadMergedPoolConfig() (*PoolConfig, []string, []string, error) {
+	result, err := projconfig.LoadMergedPoolConfig()
+	if err != nil {
+		return nil, nil, nil, err
 	}
-	if poolConfig.MaxConnsPerHost <= 0 {
-		return nil, nil, nil, fmt.Errorf("max_conns_per_host 必须大于0")
+	return convertPoolConfigData(result), result.Whitelist, result.Blacklist, nil
+}
+
+// convertPoolConfigData 将config包的PoolConfigData转换为utlsclient包的PoolConfig
+// 输入: result - config包的配置结果
+// 输出: *PoolConfig - utlsclient包的连接池配置
+func convertPoolConfigData(result *projconfig.PoolConfigResult) *PoolConfig {
+	if result == nil || result.Config == nil {
+		return nil
 	}
-	if poolConfig.ConnTimeout <= 0 {
-		return nil, nil, nil, fmt.Errorf("conn_timeout 必须大于0")
+	data := result.Config
+	return &PoolConfig{
+		MaxConnections:         data.MaxConnections,
+		MaxConnsPerHost:        data.MaxConnsPerHost,
+		MaxIdleConns:           data.MaxIdleConns,
+		ConnTimeout:            time.Duration(data.ConnTimeout) * time.Second,
+		IdleTimeout:            time.Duration(data.IdleTimeout) * time.Second,
+		MaxLifetime:            time.Duration(data.MaxLifetime) * time.Second,
+		TestTimeout:            time.Duration(data.TestTimeout) * time.Second,
+		HealthCheckInterval:    time.Duration(data.HealthCheckInterval) * time.Second,
+		CleanupInterval:        time.Duration(data.CleanupInterval) * time.Second,
+		BlacklistCheckInterval: time.Duration(data.BlacklistCheckInterval) * time.Second,
+		DNSUpdateInterval:      time.Duration(data.DNSUpdateInterval) * time.Second,
+		MaxRetries:             data.MaxRetries,
 	}
-	return poolConfig, cfgFile.Whitelist.IPs, cfgFile.Blacklist.IPs, nil
 }
 
 // PoolConfig 连接池配置
@@ -214,8 +152,8 @@ type UTLSConnection struct {
 	acceptLanguage string  // 随机生成的Accept-Language头
 
 	// HTTP/2 支持
-	h2ClientConn interface{} // HTTP/2客户端连接（*http2.ClientConn）
-	h2Mu         sync.Mutex  // HTTP/2连接锁
+	h2ClientConn *http2.ClientConn // HTTP/2客户端连接
+	h2Mu         sync.Mutex         // HTTP/2连接锁
 
 	// 生命周期管理
 	created     time.Time // 创建时间
@@ -240,6 +178,10 @@ type UTLSHotConnPool struct {
 	healthChecker *HealthChecker       // 健康检查器
 	validator     *ConnectionValidator // 连接验证器
 	ipAccessCtrl  *IPAccessController  // IP访问控制器
+
+	// 维护组件
+	dnsUpdater    DNSUpdater      // DNS更新器
+	blacklistMgr  BlacklistManager // 黑名单管理器
 
 	// 连接池配置
 	config PoolConfig
@@ -312,6 +254,10 @@ func NewUTLSHotConnPool(config *PoolConfig) *UTLSHotConnPool {
 		done:          make(chan struct{}),
 	}
 
+	// 创建维护组件（稍后在SetDependencies中初始化）
+	pool.dnsUpdater = NewDefaultDNSUpdater(nil, connManager, pool, config.DNSUpdateInterval)
+	pool.blacklistMgr = NewDefaultBlacklistManager(ipAccessCtrl, connManager, config.BlacklistCheckInterval)
+
 	// 启动后台维护任务
 	pool.startMaintenanceTasks()
 
@@ -339,6 +285,10 @@ func (p *UTLSHotConnPool) SetDependencies(
 	p.healthChecker = NewHealthChecker(p.connManager, &p.config)
 	p.validator = NewConnectionValidator(&p.config)
 	p.ipAccessCtrl = NewIPAccessController()
+
+	// 重新创建维护组件，使用新的依赖
+	p.dnsUpdater = NewDefaultDNSUpdater(ipPool, p.connManager, p, p.config.DNSUpdateInterval)
+	p.blacklistMgr = NewDefaultBlacklistManager(p.ipAccessCtrl, p.connManager, p.config.BlacklistCheckInterval)
 
 	// 如果提供了自定义的访问控制器，需要适配
 	if accessControl != nil {
@@ -612,12 +562,20 @@ func (p *UTLSHotConnPool) establishConnection(ip, targetHost string, fingerprint
 	negotiatedProto := tlsConn.ConnectionState().NegotiatedProtocol
 	projlogger.Debug("TLS握手成功，协商协议: %s", negotiatedProto)
 
-	// 6. 包装连接对象
+	// 6. 生成Accept-Language（优先使用池的指纹库，否则使用全局库）
+	var acceptLanguage string
+	if p.fingerprintLib != nil {
+		acceptLanguage = p.fingerprintLib.RandomAcceptLanguage()
+	} else {
+		acceptLanguage = fpLibrary.RandomAcceptLanguage()
+	}
+
+	// 7. 包装连接对象
 	conn := &UTLSConnection{
 		conn:           tcpConn,
 		tlsConn:        tlsConn,
 		fingerprint:    fingerprint,
-		acceptLanguage: fpLibrary.RandomAcceptLanguage(), // 随机生成Accept-Language
+		acceptLanguage: acceptLanguage,
 		targetIP:       ip,
 		targetHost:     targetHost,
 		created:        time.Now(),
@@ -835,13 +793,15 @@ func (p *UTLSHotConnPool) startMaintenanceTasks() {
 	p.wg.Add(1)
 	go p.cleanupLoop()
 
-	// 黑名单检查任务
-	p.wg.Add(1)
-	go p.blacklistCheckLoop()
+	// 启动DNS更新器
+	if p.dnsUpdater != nil {
+		p.dnsUpdater.Start()
+	}
 
-	// DNS更新任务
-	p.wg.Add(1)
-	go p.dnsUpdateLoop()
+	// 启动黑名单管理器
+	if p.blacklistMgr != nil {
+		p.blacklistMgr.Start()
+	}
 }
 
 // healthCheckLoop 健康检查循环
@@ -907,59 +867,6 @@ func (p *UTLSHotConnPool) performCleanup() {
 	p.connManager.CleanupExpiredConnections(p.config.MaxLifetime)
 }
 
-// blacklistCheckLoop 黑名单检查循环
-func (p *UTLSHotConnPool) blacklistCheckLoop() {
-	defer p.wg.Done()
-
-	ticker := time.NewTicker(p.config.BlacklistCheckInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			p.performBlacklistCheck()
-		case <-p.done:
-			return
-		}
-	}
-}
-
-// performBlacklistCheck 执行黑名单检查
-func (p *UTLSHotConnPool) performBlacklistCheck() {
-	if p.ipAccessCtrl == nil {
-		return
-	}
-
-	// 获取黑名单IP列表
-	blacklistIPs := p.ipAccessCtrl.GetBlockedIPs()
-
-	if len(blacklistIPs) == 0 {
-		return
-	}
-
-	// 清理黑名单中的连接
-	for _, ip := range blacklistIPs {
-		p.connManager.RemoveConnection(ip)
-		projlogger.Debug("清理黑名单连接: %s", ip)
-	}
-}
-
-// getRandomFingerprint 获取随机TLS指纹
-func (p *UTLSHotConnPool) getRandomFingerprint() Profile {
-	var fingerprint Profile
-	if p.fingerprintLib != nil {
-		fingerprint = p.fingerprintLib.RandomRecommendedProfile()
-	} else {
-		// 默认指纹
-		fingerprint = Profile{
-			Name:      "Chrome",
-			HelloID:   utls.HelloChrome_102,
-			UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.0.0 Safari/537.36",
-		}
-	}
-	return fingerprint
-}
-
 // testIPForWhitelist 测试IP是否可以移到白名单
 func (p *UTLSHotConnPool) testIPForWhitelist(ip string) bool {
 	// 获取该IP对应的目标域名
@@ -982,7 +889,7 @@ func (p *UTLSHotConnPool) testIPForWhitelist(ip string) bool {
 	}
 
 	// 尝试建立连接并测试
-	conn, err := p.establishConnection(ip, targetHost, p.getRandomFingerprint())
+	conn, err := p.establishConnection(ip, targetHost, p.selectFingerprint())
 	if err != nil {
 		return false
 	}
@@ -1014,113 +921,9 @@ func (p *UTLSHotConnPool) testIPForWhitelist(ip string) bool {
 	return resp.StatusCode == 200
 }
 
-// dnsUpdateLoop DNS更新循环
-func (p *UTLSHotConnPool) dnsUpdateLoop() {
-	defer p.wg.Done()
-
-	ticker := time.NewTicker(p.config.DNSUpdateInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			p.performDNSUpdate()
-		case <-p.done:
-			return
-		}
-	}
-}
-
-// performDNSUpdate 执行DNS更新
-func (p *UTLSHotConnPool) performDNSUpdate() {
-	if p.ipPool == nil {
-		return
-	}
-
-	// 获取所有已知的域名
-	hostMapping := p.connManager.GetHostMapping()
-	var domains []string
-	for host := range hostMapping {
-		domains = append(domains, host)
-	}
-
-	if len(domains) == 0 {
-		return
-	}
-
-	// 并发更新每个域名的IP
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var newConnections []*UTLSConnection
-
-	for _, domain := range domains {
-		wg.Add(1)
-		go func(d string) {
-			defer wg.Done()
-
-			// 获取新的IP列表
-			newIPs := p.getUpdatedIPsForDomain(d)
-
-			// 为新IP建立热连接
-			for _, ip := range newIPs {
-				if p.isNewIPForDomain(ip, d) {
-					conn, err := p.createNewHotConnectionWithHost(ip, d)
-					if err != nil {
-						continue
-					}
-
-					mu.Lock()
-					newConnections = append(newConnections, conn)
-					mu.Unlock()
-				}
-			}
-		}(domain)
-	}
-	wg.Wait()
-
-	// 将新连接加入连接池
-	for _, conn := range newConnections {
-		p.PutConnection(conn)
-		atomic.AddInt64(&p.stats.NewConnectionsFromDNS, 1)
-	}
-}
-
-// getUpdatedIPsForDomain 获取域名的最新IP列表
-func (p *UTLSHotConnPool) getUpdatedIPsForDomain(domain string) []string {
-	if p.ipPool == nil {
-		return nil
-	}
-
-	// 通过IP池获取最新IP
-	if p.ipPool != nil {
-		return p.ipPool.GetIPsForDomain(domain)
-	}
-
-	return nil
-}
-
-// isNewIPForDomain 检查IP是否是该域名的新IP
-func (p *UTLSHotConnPool) isNewIPForDomain(ip, domain string) bool {
-	// 检查连接是否已存在
-	if p.connManager.GetConnection(ip) != nil {
-		return false
-	}
-
-	// 检查域名映射中是否已包含该IP
-	if ipList, exists := p.connManager.GetHostMapping()[domain]; exists {
-		for _, existingIP := range ipList {
-			if existingIP == ip {
-				return false
-			}
-		}
-	}
-
-	return true
-}
-
-// createNewHotConnectionWithHost 为指定IP和域名创建热连接
+// createNewHotConnectionWithHost 为指定IP和域名创建热连接（供DNS更新器使用）
 func (p *UTLSHotConnPool) createNewHotConnectionWithHost(ip, host string) (*UTLSConnection, error) {
-	fingerprint := p.getRandomFingerprint()
+	fingerprint := p.selectFingerprint()
 	conn, err := p.establishConnection(ip, host, fingerprint)
 	if err != nil {
 		return nil, err
@@ -1195,6 +998,14 @@ func (p *UTLSHotConnPool) GetStats() PoolStats {
 // Close 关闭连接池
 func (p *UTLSHotConnPool) Close() error {
 	close(p.done)
+
+	// 停止维护组件
+	if p.dnsUpdater != nil {
+		p.dnsUpdater.Stop()
+	}
+	if p.blacklistMgr != nil {
+		p.blacklistMgr.Stop()
+	}
 
 	// 等待后台任务结束
 	p.wg.Wait()
@@ -1272,9 +1083,7 @@ func (conn *UTLSConnection) Close() error {
 	// 关闭 HTTP/2 客户端连接
 	conn.h2Mu.Lock()
 	if conn.h2ClientConn != nil {
-		if cc, ok := conn.h2ClientConn.(interface{ Close() error }); ok {
-			cc.Close()
-		}
+		conn.h2ClientConn.Close()
 		conn.h2ClientConn = nil
 	}
 	conn.h2Mu.Unlock()
@@ -1318,10 +1127,10 @@ func (conn *UTLSConnection) WaitForAvailable(timeout time.Duration) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 
-	// 条件变量应该在创建连接时初始化，这里不应该为nil
+	// 条件变量在创建连接时已初始化，这里不应该为nil
 	if conn.cond == nil {
-		// 如果确实为nil（不应该发生），创建一个新的
-		conn.cond = sync.NewCond(&conn.mu)
+		// 防御性检查：如果确实为nil，返回错误
+		return fmt.Errorf("连接条件变量未初始化")
 	}
 
 	timeoutChan := time.After(timeout)
