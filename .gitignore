@@ -48,3 +48,19 @@ bin/
 .cursor/rules/todo2.mdc
 .cursor/mcp.json
 .todo2/
+
+# 编译产物
+grpcserver
+grpcclient
+grpc_test
+utlsProxy
+utlsclient-cli
+
+# 证书文件
+server.crt
+server.key
+*.crt
+*.key
+
+# 临时测试文件
+/tmp/
