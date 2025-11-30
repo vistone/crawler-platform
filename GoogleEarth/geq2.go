@@ -8,9 +8,9 @@ import (
 // Q2Parser 定义Q2解析接口，支持输出结构体或JSON
 type Q2Parser interface {
 	// Parse 解析为结构体（简化输出结构）
-	Parse(body []byte, tilekey string, rootNode bool, baseURL string) (*Q2Response, error)
+	Parse(body []byte, tilekey string, rootNode bool) (*Q2Response, error)
 	// ParseToJSON 解析为JSON字符串（与 ParseQ2Body 输出一致）
-	ParseToJSON(body []byte, tilekey string, rootNode bool, baseURL string) (string, error)
+	ParseToJSON(body []byte, tilekey string, rootNode bool) (string, error)
 }
 
 // DefaultQ2Parser 默认实现，复用现有解析逻辑
@@ -20,13 +20,13 @@ type DefaultQ2Parser struct{}
 func NewQ2Parser() Q2Parser { return &DefaultQ2Parser{} }
 
 // ParseToJSON 直接复用现有 JSON 输出逻辑
-func (p *DefaultQ2Parser) ParseToJSON(body []byte, tilekey string, rootNode bool, baseURL string) (string, error) {
-	return ParseQ2Body(body, tilekey, rootNode, baseURL)
+func (p *DefaultQ2Parser) ParseToJSON(body []byte, tilekey string, rootNode bool) (string, error) {
+	return ParseQ2Body(body, tilekey, rootNode)
 }
 
 // Parse 返回结构体形式的简化响应
-func (p *DefaultQ2Parser) Parse(body []byte, tilekey string, rootNode bool, baseURL string) (*Q2Response, error) {
-	jsonStr, err := p.ParseToJSON(body, tilekey, rootNode, baseURL)
+func (p *DefaultQ2Parser) Parse(body []byte, tilekey string, rootNode bool) (*Q2Response, error) {
+	jsonStr, err := p.ParseToJSON(body, tilekey, rootNode)
 	if err != nil {
 		return nil, err
 	}
@@ -82,20 +82,24 @@ type Q2Filter interface {
 // - Q2子节点仅保留tilekey长度为4的倍数（保持既有行为）
 type DefaultQ2Filter struct{}
 
-func (DefaultQ2Filter) IncludeImagery(tilekey string, version uint16, provider uint16) bool { return true }
-func (DefaultQ2Filter) IncludeTerrain(tilekey string, version uint16, provider uint16) bool { return true }
+func (DefaultQ2Filter) IncludeImagery(tilekey string, version uint16, provider uint16) bool {
+	return true
+}
+func (DefaultQ2Filter) IncludeTerrain(tilekey string, version uint16, provider uint16) bool {
+	return true
+}
 func (DefaultQ2Filter) IncludeQ2(tilekey string, version uint16) bool { return len(tilekey)%4 == 0 }
 
 // Q2Response Q2数据的简化JSON响应结构（输出格式）
 type Q2Response struct {
-	Tilekey     string          `json:"tilekey"`      // 父节点的瓦片路径
-	ImageryList []Q2DataRefJSON `json:"imagery_list"` // 影像数据列表
-	TerrainList []Q2DataRefJSON `json:"terrain_list"` // 地形数据列表
-	VectorList  []Q2DataRefJSON `json:"vector_list"`  // 矢量数据列表
-	Q2List      []Q2DataRefJSON `json:"q2_list"`      // Q2子节点列表
-	Success     bool            `json:"success"`      // 解析是否成功
+	Tilekey     string          `json:"tilekey"`         // 父节点的瓦片路径
+	ImageryList []Q2DataRefJSON `json:"imagery_list"`    // 影像数据列表
+	TerrainList []Q2DataRefJSON `json:"terrain_list"`    // 地形数据列表
+	VectorList  []Q2DataRefJSON `json:"vector_list"`     // 矢量数据列表
+	Q2List      []Q2DataRefJSON `json:"q2_list"`         // Q2子节点列表
+	Success     bool            `json:"success"`         // 解析是否成功
 	Error       string          `json:"error,omitempty"` // 错误信息
-	
+
 	// 内部字段，不输出到JSON
 	MagicID        string        `json:"-"` // Magic ID (十六进制)
 	DataTypeID     uint32        `json:"-"` // 数据类型ID
@@ -107,21 +111,21 @@ type Q2Response struct {
 
 // Q2NodeJSON Q2节点的JSON表示
 type Q2NodeJSON struct {
-	Index           int             `json:"index"`                     // 节点索引
-	Path            string          `json:"path"`                      // 四叉树路径
-	Subindex        int             `json:"subindex"`                  // 子索引
-	Children        []int           `json:"children"`                  // 子节点索引列表
-	ChildCount      int             `json:"child_count"`               // 子节点数量
-	HasCache        bool            `json:"has_cache"`                 // 是否有缓存节点
-	HasImage        bool            `json:"has_image"`                 // 是否有影像数据
-	HasTerrain      bool            `json:"has_terrain"`               // 是否有地形数据
-	HasVector       bool            `json:"has_vector"`                // 是否有矢量数据
-	CNodeVersion    uint16          `json:"cache_node_version"`        // 缓存节点版本
-	ImageVersion    uint16          `json:"image_version,omitempty"`   // 影像版本
-	TerrainVersion  uint16          `json:"terrain_version,omitempty"` // 地形版本
-	ImageProvider   uint8           `json:"image_provider,omitempty"`  // 影像提供商
+	Index           int             `json:"index"`                      // 节点索引
+	Path            string          `json:"path"`                       // 四叉树路径
+	Subindex        int             `json:"subindex"`                   // 子索引
+	Children        []int           `json:"children"`                   // 子节点索引列表
+	ChildCount      int             `json:"child_count"`                // 子节点数量
+	HasCache        bool            `json:"has_cache"`                  // 是否有缓存节点
+	HasImage        bool            `json:"has_image"`                  // 是否有影像数据
+	HasTerrain      bool            `json:"has_terrain"`                // 是否有地形数据
+	HasVector       bool            `json:"has_vector"`                 // 是否有矢量数据
+	CNodeVersion    uint16          `json:"cache_node_version"`         // 缓存节点版本
+	ImageVersion    uint16          `json:"image_version,omitempty"`    // 影像版本
+	TerrainVersion  uint16          `json:"terrain_version,omitempty"`  // 地形版本
+	ImageProvider   uint8           `json:"image_provider,omitempty"`   // 影像提供商
 	TerrainProvider uint8           `json:"terrain_provider,omitempty"` // 地形提供商
-	Channels        []Q2ChannelJSON `json:"channels,omitempty"`        // 通道列表
+	Channels        []Q2ChannelJSON `json:"channels,omitempty"`         // 通道列表
 }
 
 // Q2ChannelJSON 通道JSON表示
@@ -151,9 +155,8 @@ type Q2DataRefJSON struct {
 // body: HTTP响应解密后的二进制数据
 // tilekey: 当前瓦片的路径（如"0", "0123"等）
 // rootNode: 是否为根节点(tilekey长度<4)
-// baseURL: 基础URL（如"https://kh.google.com"），用于构造数据引用的URL
 // Returns: JSON字符串和错误
-func ParseQ2Body(body []byte, tilekey string, rootNode bool, baseURL string) (string, error) {
+func ParseQ2Body(body []byte, tilekey string, rootNode bool) (string, error) {
 	response := &Q2Response{
 		Success:     false,
 		Tilekey:     tilekey,
@@ -196,9 +199,9 @@ func ParseQ2Body(body []byte, tilekey string, rootNode bool, baseURL string) (st
 	qtp16.GetDataReferences(references, pathPrefix, rootNode)
 
 	// 转换数据引用为JSON
-	refs := convertReferencesToJSON(references, baseURL)
+	refs := convertReferencesToJSON(references)
 	response.DataReferences = refs
-	
+
 	// 填充输出列表
 	response.ImageryList = refs.ImageryRefs
 	response.TerrainList = refs.TerrainRefs
@@ -299,7 +302,7 @@ func convertBinaryNodesToJSON(
 }
 
 // convertReferencesToJSON 将数据引用转换为JSON格式
-func convertReferencesToJSON(refs *QuadtreeDataReferenceGroup, baseURL string) *Q2References {
+func convertReferencesToJSON(refs *QuadtreeDataReferenceGroup) *Q2References {
 	result := &Q2References{
 		ImageryRefs: []Q2DataRefJSON{},
 		TerrainRefs: []Q2DataRefJSON{},
@@ -308,7 +311,7 @@ func convertReferencesToJSON(refs *QuadtreeDataReferenceGroup, baseURL string) *
 	}
 
 	// 构造策略对象
-	builder := PathOnlyURLBuilder{Base: baseURL}
+	builder := PathOnlyURLBuilder{Base: ""}
 	filter := DefaultQ2Filter{}
 
 	// 转换影像引用
@@ -423,16 +426,22 @@ type Q2ParseOptions struct {
 // OptionsFilter 根据选项过滤
 type OptionsFilter struct{ opts Q2ParseOptions }
 
-func (f OptionsFilter) IncludeImagery(tilekey string, version uint16, provider uint16) bool { return f.opts.IncludeImagery }
-func (f OptionsFilter) IncludeTerrain(tilekey string, version uint16, provider uint16) bool { return f.opts.IncludeTerrain }
+func (f OptionsFilter) IncludeImagery(tilekey string, version uint16, provider uint16) bool {
+	return f.opts.IncludeImagery
+}
+func (f OptionsFilter) IncludeTerrain(tilekey string, version uint16, provider uint16) bool {
+	return f.opts.IncludeTerrain
+}
 func (f OptionsFilter) IncludeQ2(tilekey string, version uint16) bool {
-	if !f.opts.IncludeQ2 { return false }
+	if !f.opts.IncludeQ2 {
+		return false
+	}
 	// 保持既有行为：仅保留长度为4的倍数
 	return len(tilekey)%4 == 0
 }
 
 // ParseQ2BodyWithOptions 解析并根据选项控制输出类型
-func ParseQ2BodyWithOptions(body []byte, tilekey string, rootNode bool, baseURL string, opts Q2ParseOptions) (string, error) {
+func ParseQ2BodyWithOptions(body []byte, tilekey string, rootNode bool, opts Q2ParseOptions) (string, error) {
 	response := &Q2Response{
 		Success:     false,
 		Tilekey:     tilekey,
@@ -456,7 +465,9 @@ func ParseQ2BodyWithOptions(body []byte, tilekey string, rootNode bool, baseURL 
 
 	// 节点（内部保留）
 	numbering := GetNumbering(0)
-	if !rootNode { numbering = GetNumbering(1) }
+	if !rootNode {
+		numbering = GetNumbering(1)
+	}
 	nodeIndex := 0
 	path := QuadtreePath{}
 	convertBinaryNodesToJSON(qtp16, numbering, &nodeIndex, path, &response.Nodes)
@@ -465,16 +476,24 @@ func ParseQ2BodyWithOptions(body []byte, tilekey string, rootNode bool, baseURL 
 	pathPrefix := NewQuadtreePathFromString(tilekey)
 	references := &QuadtreeDataReferenceGroup{}
 	qtp16.GetDataReferences(references, pathPrefix, rootNode)
-	builder := PathOnlyURLBuilder{Base: baseURL}
+	builder := PathOnlyURLBuilder{Base: ""}
 	filter := OptionsFilter{opts: opts}
 	refs := convertReferencesToJSONWithStrategy(references, builder, filter)
 	response.DataReferences = refs // 内部保留
 
 	// 输出列表按选项控制
-	if opts.IncludeImagery { response.ImageryList = refs.ImageryRefs }
-	if opts.IncludeTerrain { response.TerrainList = refs.TerrainRefs }
-	if opts.IncludeVector  { response.VectorList  = refs.VectorRefs }
-	if opts.IncludeQ2      { response.Q2List      = refs.Q2ChildRefs }
+	if opts.IncludeImagery {
+		response.ImageryList = refs.ImageryRefs
+	}
+	if opts.IncludeTerrain {
+		response.TerrainList = refs.TerrainRefs
+	}
+	if opts.IncludeVector {
+		response.VectorList = refs.VectorRefs
+	}
+	if opts.IncludeQ2 {
+		response.Q2List = refs.Q2ChildRefs
+	}
 
 	return marshalResponse(response)
 }
