@@ -1,0 +1,306 @@
+syntax = "proto3";
+
+// 任务管理器 gRPC 服务定义
+// 用于管理任务客户端、服务器节点和任务执行的协议定义文件
+
+package tasksmanager;
+
+// Go 语言包选项，指定生成的 Go 代码包名
+option go_package = ".;tasksmanager";
+
+// TaskType 任务类型枚举
+// 用于表示任务的类型
+enum TaskType {
+  TASK_TYPE_UNKNOWN = 0;  // 未知类型 - 任务类型未初始化或无法确定
+  TASK_TYPE_GOOGLE_EARTH_ROCKTREE_BULK_METADATA = 1;    // 获取RockTree的批量元数据
+  TASK_TYPE_GOOGLE_EARTH_ROCKTREE_NODE_DATA = 2;     // 获取RockTree的节点数据
+  TASK_TYPE_GOOGLE_EARTH_Q2 = 3;     // 获取Q2数据
+  TASK_TYPE_GOOGLE_EARTH_IMAGERY = 4;     // 获取Imagery数据
+  TASK_TYPE_GOOGLE_EARTH_IMAGERY_HISTORY = 5;     // 获取Imagery历史数据
+  TASK_TYPE_GOOGLE_EARTH_QP = 6;     // 获取qpQ2数据
+  TASK_TYPE_GOOGLE_EARTH_TERRAIN = 7; // 获取Terrain数据
+}
+
+// TasksStatus 批量任务执行状态枚举
+// 用于表示一组批量任务的整体执行状态（与单个任务的 TaskStatus 不同）
+enum TasksStatus {
+  TASKS_STATUS_UNKNOWN = 0;  // 未知状态 - 批量任务状态未初始化或无法确定
+  TASKS_STATUS_RUNNING = 1;  // 运行中 - 批量任务正在执行
+  TASKS_STATUS_PAUSED = 2;   // 已暂停 - 批量任务已暂停，可以恢复
+  TASKS_STATUS_STOPPED = 3;  // 已停止 - 批量任务已停止，需要重新启动
+}
+
+// TaskStatus 单个任务执行状态枚举
+// 用于表示单个任务的生命周期状态（与批量任务的 TasksStatus 不同）
+enum TaskStatus {
+  TASK_STATUS_PENDING = 0;  // 等待中 - 任务已创建，等待执行
+  TASK_STATUS_RUNNING = 1;  // 运行中 - 任务正在执行
+  TASK_STATUS_SUCCESS = 2;  // 成功 - 任务执行成功完成
+  TASK_STATUS_FAILED = 3;   // 失败 - 任务执行失败
+}
+
+// ClientTaskStatus 任务客户端连接状态枚举
+// 用于表示任务客户端与服务器的连接状态和在线状态
+enum ClientTaskStatus {
+  CLIENT_TASK_STATUS_OFFLINE = 0;      // 离线 - 客户端未连接或连接已断开
+  CLIENT_TASK_STATUS_ONLINE = 1;       // 在线 - 客户端正常连接，可以接收任务
+  CLIENT_TASK_STATUS_AWAY = 2;         // 暂离 - 客户端在线但暂时不可用（如休眠模式）
+  CLIENT_TASK_STATUS_CONNECTING = 3;   // 连接中 - 客户端正在建立连接
+  CLIENT_TASK_STATUS_DISCONNECTING = 4; // 断开中 - 客户端正在关闭连接
+}
+
+// TaskMethod HTTP 请求方法枚举
+// 对应标准 HTTP 方法，用于指定任务请求使用的 HTTP 动作
+enum TaskMethod {
+  TASK_METHOD_GET = 0;      // GET - 获取资源
+  TASK_METHOD_POST = 1;     // POST - 提交数据
+  TASK_METHOD_PUT = 2;      // PUT - 更新资源（完整替换）
+  TASK_METHOD_DELETE = 3;   // DELETE - 删除资源
+  TASK_METHOD_PATCH = 4;    // PATCH - 部分更新资源
+  TASK_METHOD_HEAD = 5;     // HEAD - 获取响应头（无响应体）
+  TASK_METHOD_OPTIONS = 6;  // OPTIONS - 获取服务器支持的 HTTP 方法
+}
+
+// TaskClientInfo 任务客户端信息
+// 客户端与 gRPC 服务器连接时需要提供的信息，用于标识和跟踪客户端状态
+// 包含客户端的静态配置信息和实时资源使用情况
+message TaskClientInfo {
+  // 基本信息字段
+  string client_uuid = 1;              // 客户端唯一标识符（UUID）
+  string client_name = 2;              // 客户端名称/显示名称
+  string client_ip = 3;                // 客户端 IP 地址
+  string client_system = 4;            // 客户端操作系统信息（如 "Linux", "Windows"）
+  string client_version = 5;           // 客户端版本号
+  string client_cpu = 6;               // 客户端 CPU 信息（型号、核心数等，静态信息）
+  string client_memory = 7;            // 客户端内存信息（总内存大小等，静态信息）
+  string client_create_time = 8;       // 客户端创建时间（ISO 8601 格式字符串）
+  string client_last_active_time = 9;  // 客户端最后活跃时间（ISO 8601 格式字符串）
+  ClientTaskStatus client_task_status = 10;  // 客户端连接状态（在线/离线等）
+  
+  // 实时资源使用情况字段（动态变化数据）
+  // 客户端需要实时传递这些数据，让节点服务了解客户端的健康状况
+  optional double cpu_usage_percent = 11;        // CPU 使用率（百分比，0-100）
+  optional int64 memory_used_bytes = 12;         // 内存已使用量（字节）
+  optional int64 memory_total_bytes = 13;        // 内存总容量（字节）
+  optional double network_rx_bytes_per_sec = 14; // 网络接收带宽（字节/秒，下载速度）
+  optional double network_tx_bytes_per_sec = 15; // 网络发送带宽（字节/秒，上传速度）
+  optional int64 disk_used_bytes = 16;           // 硬盘已使用空间（字节）
+  optional int64 disk_total_bytes = 17;          // 硬盘总容量（字节）
+  optional string resource_update_time = 18;     // 资源数据更新时间（ISO 8601 格式字符串）
+}
+
+// TaskClientInfoListRequest 任务客户端列表请求
+// 获取已登录的用户（客户端）列表的请求消息
+message TaskClientInfoListRequest {
+  // 空请求体，或者可以添加过滤条件
+}
+
+// TaskClientInfoListResponse 任务客户端列表响应
+// 返回已登录的用户（客户端）列表
+message TaskClientInfoListResponse {
+  repeated TaskClientInfo items = 1;  // 已登录的客户端信息列表
+}
+
+// RegisterClientResponse 客户端注册响应
+// 客户端注册请求的响应，返回注册结果和已知的服务器节点列表
+message RegisterClientResponse {
+  bool success = 1;                        // 注册是否成功
+  string message = 2;                      // 响应消息
+  repeated GrpcServerNodeInfo server_nodes = 3; // 所有已知的服务器节点列表（用于客户端连接）
+}
+
+// ClientHeartbeatResponse 客户端心跳响应
+// 客户端心跳请求的响应，可能包含新上线的服务器节点信息
+message ClientHeartbeatResponse {
+  bool success = 1;                        // 心跳是否成功
+  repeated GrpcServerNodeInfo new_server_nodes = 2; // 新上线的服务器节点列表（如果有）
+}
+
+// GrpcServerNodeInfo gRPC 服务器节点信息
+// 用于标识和跟踪 gRPC 服务器节点的状态和配置信息
+// 包含节点的静态配置信息和实时资源使用情况
+message GrpcServerNodeInfo {
+  // 基本信息字段
+  string node_uuid = 1;              // 节点唯一标识符（UUID）
+  string node_name = 2;              // 节点名称/显示名称
+  string node_ip = 3;                // 节点 IP 地址
+  string node_port = 4;              // 节点服务端口号
+  string node_system = 5;            // 节点操作系统信息（如 "Linux", "Windows"）
+  string node_version = 6;           // 节点版本号
+  string node_cpu = 7;               // 节点 CPU 信息（型号、核心数等，静态信息）
+  string node_memory = 8;            // 节点内存信息（总内存大小等，静态信息）
+  string node_create_time = 9;       // 节点创建时间（ISO 8601 格式字符串）
+  string node_last_active_time = 10; // 节点最后活跃时间（ISO 8601 格式字符串）
+  
+  // 实时资源使用情况字段（动态变化数据）
+  optional double cpu_usage_percent = 11;        // CPU 使用率（百分比，0-100）
+  optional int64 memory_used_bytes = 12;         // 内存已使用量（字节）
+  optional int64 memory_total_bytes = 13;        // 内存总容量（字节）
+  optional double network_rx_bytes_per_sec = 14; // 网络接收带宽（字节/秒，下行速度）
+  optional double network_tx_bytes_per_sec = 15; // 网络发送带宽（字节/秒，上行速度）
+  optional int64 disk_used_bytes = 16;           // 硬盘已使用空间（字节）
+  optional int64 disk_total_bytes = 17;          // 硬盘总容量（字节）
+  optional string resource_update_time = 18;     // 资源数据更新时间（ISO 8601 格式字符串）
+}
+
+// GrpcServerNodeInfoListRequest gRPC 服务器节点列表请求
+// 获取 gRPC 服务器节点列表的请求消息
+message GrpcServerNodeInfoListRequest {
+  // 空请求体，或者可以添加过滤条件
+}
+
+// GrpcServerNodeInfoListResponse gRPC 服务器节点列表响应
+// 返回 gRPC 服务器节点列表
+message GrpcServerNodeInfoListResponse {
+  repeated GrpcServerNodeInfo items = 1;  // 服务器节点信息列表
+}
+
+// NodeRegistrationRequest 节点注册请求
+// 新节点加入网络时，向其他节点注册自己的信息
+message NodeRegistrationRequest {
+  GrpcServerNodeInfo node_info = 1;        // 节点信息
+  repeated string known_nodes = 2;         // 已知的其他节点地址列表（用于网络发现）
+}
+
+// NodeRegistrationResponse 节点注册响应
+// 返回注册结果和已知节点列表
+message NodeRegistrationResponse {
+  bool success = 1;                        // 注册是否成功
+  string message = 2;                      // 响应消息
+  repeated GrpcServerNodeInfo known_nodes = 3; // 已知的其他节点列表（用于网络发现）
+}
+
+// NodeHeartbeatRequest 节点心跳请求
+// 节点定期发送心跳，告知其他节点自己仍然在线
+message NodeHeartbeatRequest {
+  string node_uuid = 1;                    // 节点 UUID
+  GrpcServerNodeInfo node_info = 2;        // 当前节点信息（包含最新的资源使用情况）
+  int64 timestamp = 3;                     // 心跳时间戳（Unix 时间戳，毫秒）
+}
+
+// NodeHeartbeatResponse 节点心跳响应
+// 响应心跳请求，可能包含其他节点的最新信息
+message NodeHeartbeatResponse {
+  bool success = 1;                        // 心跳是否成功
+  repeated GrpcServerNodeInfo updated_nodes = 2; // 其他节点的最新信息（如有更新）
+}
+
+// NodeMessage 节点间消息
+// 用于节点间相互传递信息和指令
+message NodeMessage {
+  string message_id = 1;                   // 消息唯一标识符
+  string from_node_uuid = 2;               // 发送方节点 UUID
+  string to_node_uuid = 3;                 // 接收方节点 UUID（空字符串表示广播）
+  string message_type = 4;                 // 消息类型（如 "TASK_REQUEST", "TASK_RESULT", "SYNC_REQUEST" 等）
+  bytes payload = 5;                       // 消息负载（JSON 或其他格式的数据）
+  int64 timestamp = 6;                     // 消息时间戳（Unix 时间戳，毫秒）
+  optional int32 ttl = 7;                  // 消息生存时间（跳数，用于限制广播范围）
+}
+
+// NodeMessageRequest 节点消息发送请求
+// 向其他节点发送消息
+message NodeMessageRequest {
+  NodeMessage message = 1;                 // 要发送的消息
+}
+
+// NodeMessageResponse 节点消息响应
+// 消息发送结果
+message NodeMessageResponse {
+  bool success = 1;                        // 是否成功发送
+  string message = 2;                      // 响应消息
+}
+
+// SyncNodeListRequest 同步节点列表请求
+// 请求与其他节点同步节点列表
+message SyncNodeListRequest {
+  string requesting_node_uuid = 1;         // 请求方节点 UUID
+  repeated string known_node_uuids = 2;    // 当前已知的节点 UUID 列表
+  int64 last_sync_time = 3;                // 上次同步时间（Unix 时间戳，毫秒）
+}
+
+// SyncNodeListResponse 同步节点列表响应
+// 返回需要同步的节点信息
+message SyncNodeListResponse {
+  repeated GrpcServerNodeInfo nodes_to_add = 1;    // 需要添加的新节点
+  repeated string nodes_to_remove = 2;             // 需要移除的节点 UUID（已离线）
+  repeated GrpcServerNodeInfo nodes_to_update = 3; // 需要更新的节点信息
+}
+
+// TaskRequest 任务请求消息
+// 用于提交新的任务请求，包含任务执行所需的所有信息
+message TaskRequest {
+  string task_client_id = 1;    // 任务客户端标识符，指定执行任务的客户端
+  TaskType task_type = 2;                     // 任务类型
+  string task_uri = 3;          // 任务目标 URI，即要请求的 HTTP URL
+  optional bytes task_body = 4;          // 任务请求体，HTTP 请求的 body 内容（如 POST 请求的数据）
+  optional TaskMethod task_method = 5;   // HTTP 请求方法（GET、POST、PUT、DELETE 等）
+  optional TaskStatus task_status = 6;   // 任务初始状态（通常为 PENDING）
+}
+
+// TaskResponse 任务响应消息
+// 任务执行完成后返回的响应结果
+message TaskResponse {
+  string task_client_id = 1;                  // 任务客户端标识符，与请求中的对应
+  TaskType task_type = 2;                     // 任务类型
+  string task_uri = 3;                        // 任务目标 URI，与请求中的对应
+  optional bytes task_response_body = 4;      // HTTP 响应体内容（可选，任务失败时可能为空）
+  optional int32 task_response_status_code = 5; // HTTP 响应状态码（可选，如 200、404、500 等）
+}
+
+// TasksManager 任务管理器 gRPC 服务
+// 提供任务客户端管理、服务器节点管理和任务执行等功能
+// 支持去中心化架构，每个节点既是服务器也是客户端，可以相互通信
+service TasksManager {
+  // GetTaskClientInfoList 获取任务客户端列表
+  // 返回所有已登录并连接到服务器的任务客户端信息列表
+  // 包括客户端的基本信息、系统信息、连接状态等
+  rpc GetTaskClientInfoList(TaskClientInfoListRequest) returns (TaskClientInfoListResponse);
+  
+  // GetGrpcServerNodeInfoList 获取 gRPC 服务器节点列表
+  // 返回所有 gRPC 服务器节点的信息列表
+  // 包括节点的基本信息、系统信息、运行状态等
+  rpc GetGrpcServerNodeInfoList(GrpcServerNodeInfoListRequest) returns (GrpcServerNodeInfoListResponse);
+  
+  // SubmitTask 提交任务请求
+  // 向指定的任务客户端提交一个新的 HTTP 任务请求
+  // 任务将在客户端执行，并返回执行结果（包括响应状态码和响应体）
+  rpc SubmitTask(TaskRequest) returns (TaskResponse);
+  
+  // ========== 客户端管理接口（独立于服务器节点）==========
+  
+  // RegisterClient 客户端注册
+  // 客户端连接到服务器时调用，注册自己的信息
+  // 服务器会返回所有已知的服务器节点列表，帮助客户端连接到所有服务器
+  rpc RegisterClient(TaskClientInfo) returns (RegisterClientResponse);
+  
+  // ClientHeartbeat 客户端心跳
+  // 客户端定期发送心跳，告知服务器自己仍然在线
+  // 同时更新自己的资源使用情况等信息
+  // 服务器会在响应中返回新上线的服务器节点列表（如果有）
+  rpc ClientHeartbeat(TaskClientInfo) returns (ClientHeartbeatResponse);
+  
+  // ========== 服务器节点管理接口（去中心化节点管理）==========
+  
+  // RegisterNode 服务器节点注册
+  // 新服务器节点加入网络时调用，向其他服务器节点注册自己的信息
+  // 接收方节点会返回已知的其他服务器节点列表，帮助新节点快速发现网络中的其他节点
+  rpc RegisterNode(NodeRegistrationRequest) returns (NodeRegistrationResponse);
+  
+  // NodeHeartbeat 服务器节点心跳
+  // 服务器节点定期发送心跳，告知其他服务器节点自己仍然在线
+  // 同时可以更新自己的资源使用情况等信息
+  // 接收方可能返回其他服务器节点的最新信息
+  rpc NodeHeartbeat(NodeHeartbeatRequest) returns (NodeHeartbeatResponse);
+  
+  // SendNodeMessage 发送节点消息
+  // 节点间相互传递消息和指令
+  // 支持点对点消息（指定 to_node_uuid）和广播消息（to_node_uuid 为空）
+  // 可用于任务分配、状态同步、事件通知等场景
+  rpc SendNodeMessage(NodeMessageRequest) returns (NodeMessageResponse);
+  
+  // SyncNodeList 同步节点列表
+  // 请求与其他节点同步节点列表信息
+  // 接收方会比较请求方的已知节点列表，返回需要添加、移除或更新的节点信息
+  // 用于维护网络中所有节点的最新状态
+  rpc SyncNodeList(SyncNodeListRequest) returns (SyncNodeListResponse);
+}

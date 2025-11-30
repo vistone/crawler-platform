@@ -38,7 +38,7 @@ type UTLSProxy struct {
 	config       *ProxyConfig
 	connPool     *utlsclient.UTLSHotConnPool
 	quicListener *quic.Listener
-	handlers     map[*quic.Conn]*IPTunnelHandler
+	handlers     map[*quic.Conn]interface{} // 可以是HybridHandler或IPTunnelHandler
 	handlersMu   sync.RWMutex
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -69,7 +69,7 @@ func NewUTLSProxy(config *ProxyConfig) (*UTLSProxy, error) {
 	proxy := &UTLSProxy{
 		config:   config,
 		connPool: connPool,
-		handlers: make(map[*quic.Conn]*IPTunnelHandler),
+		handlers: make(map[*quic.Conn]interface{}),
 		ctx:      ctx,
 		cancel:   cancel,
 	}
@@ -103,9 +103,32 @@ func (p *UTLSProxy) Start() error {
 		return fmt.Errorf("创建UDP监听器失败: %w", err)
 	}
 
+	// 优化UDP缓冲区大小，提高传输效率
+	// 设置接收缓冲区为8MB（QUIC推荐值）
+	if err := udpConn.SetReadBuffer(8 * 1024 * 1024); err != nil {
+		projlogger.Warn("设置UDP接收缓冲区失败，使用默认值: %v", err)
+	}
+	// 设置发送缓冲区为8MB
+	if err := udpConn.SetWriteBuffer(8 * 1024 * 1024); err != nil {
+		projlogger.Warn("设置UDP发送缓冲区失败，使用默认值: %v", err)
+	}
+
+	// 优化QUIC配置 - 高速传输和连接复用
 	quicConfig := &quic.Config{
-		KeepAlivePeriod: 10 * time.Second,
-		MaxIdleTimeout:  30 * time.Second,
+		// 保持连接活跃，支持长连接复用
+		KeepAlivePeriod: 5 * time.Second,  // 更频繁的keepalive
+		MaxIdleTimeout:  60 * time.Second, // 增加空闲超时，支持连接复用
+
+		// 高并发支持
+		MaxIncomingStreams:    1000, // 增加最大流数
+		MaxIncomingUniStreams: 1000, // 增加单向流数
+
+		// 接收窗口优化 - 提高吞吐量
+		InitialStreamReceiveWindow:     8 * 1024 * 1024,  // 8MB 流接收窗口
+		InitialConnectionReceiveWindow: 16 * 1024 * 1024, // 16MB 连接接收窗口
+
+		// 允许0-RTT连接，减少握手延迟
+		Allow0RTT: true,
 	}
 
 	quicListener, err := quic.Listen(udpConn, tlsConfig, quicConfig)
@@ -118,6 +141,7 @@ func (p *UTLSProxy) Start() error {
 	projlogger.Info("TUIC代理服务器启动，监听地址: %s", p.config.ListenAddr)
 
 	// 启动接受连接的goroutine
+	projlogger.Info("UTLSProxy: 启动接受连接的goroutine")
 	go p.acceptConnections()
 
 	return nil
@@ -125,22 +149,27 @@ func (p *UTLSProxy) Start() error {
 
 // acceptConnections 接受客户端连接
 func (p *UTLSProxy) acceptConnections() {
+	projlogger.Info("UTLSProxy: 开始接受客户端连接")
 	for {
 		select {
 		case <-p.ctx.Done():
+			projlogger.Info("UTLSProxy: 上下文已取消，停止接受连接")
 			return
 		default:
 			// 接受QUIC连接
+			projlogger.Info("UTLSProxy: 等待接受QUIC连接...")
 			conn, err := p.quicListener.Accept(p.ctx)
 			if err != nil {
 				if p.ctx.Err() != nil {
 					// 上下文已取消，正常退出
+					projlogger.Info("UTLSProxy: 上下文已取消，停止接受连接")
 					return
 				}
-				projlogger.Error("接受QUIC连接失败: %v", err)
+				projlogger.Error("UTLSProxy: 接受QUIC连接失败: %v", err)
 				continue
 			}
 
+			projlogger.Info("UTLSProxy: 接受新QUIC连接: %s", conn.RemoteAddr())
 			// 为每个连接启动处理goroutine
 			go p.handleConnection(conn)
 		}
@@ -153,7 +182,11 @@ func (p *UTLSProxy) handleConnection(conn *quic.Conn) {
 		// 清理handler
 		p.handlersMu.Lock()
 		if handler, exists := p.handlers[conn]; exists {
-			handler.Stop()
+			// 类型断言并调用Stop方法
+			switch h := handler.(type) {
+			case *IPTunnelHandler:
+				h.Stop()
+			}
 			delete(p.handlers, conn)
 		}
 		p.handlersMu.Unlock()
@@ -161,20 +194,20 @@ func (p *UTLSProxy) handleConnection(conn *quic.Conn) {
 		conn.CloseWithError(0, "连接关闭")
 	}()
 
-	projlogger.Debug("新客户端连接: %s", conn.RemoteAddr())
+	projlogger.Info("UTLSProxy: 新客户端连接: %s", conn.RemoteAddr())
 
-	// 创建真正的IP层TUN处理器（而不是TCP代理）
+	// 创建IPTunnelHandler（已支持CONNECT和PACKET两种模式）
 	handler := NewIPTunnelHandler(p, conn)
-	
+
 	// 注册handler
 	p.handlersMu.Lock()
 	p.handlers[conn] = handler
 	p.handlersMu.Unlock()
-	
-	// 启动TUN处理器
+
+	// 启动处理器
 	handler.Start()
-	
-	// 等待连接关闭（等待handler的上下文完成）
+
+	// 等待连接关闭
 	<-handler.ctx.Done()
 }
 
@@ -206,8 +239,43 @@ func initLogger(level string) error {
 		level = "info"
 	}
 
-	// 使用项目级日志系统
-	logger := &projlogger.DefaultLogger{}
+	// 根据日志级别配置日志记录器
+	// debug: 输出所有级别
+	// info: 输出 info, warn, error
+	// warn: 输出 warn, error
+	// error: 只输出 error
+	var enableDebug, enableInfo, enableWarn, enableError bool
+	switch level {
+	case "debug":
+		enableDebug = true
+		enableInfo = true
+		enableWarn = true
+		enableError = true
+	case "info":
+		enableDebug = false
+		enableInfo = true
+		enableWarn = true
+		enableError = true
+	case "warn":
+		enableDebug = false
+		enableInfo = false
+		enableWarn = true
+		enableError = true
+	case "error":
+		enableDebug = false
+		enableInfo = false
+		enableWarn = false
+		enableError = true
+	default:
+		// 默认使用 info 级别
+		enableDebug = false
+		enableInfo = true
+		enableWarn = true
+		enableError = true
+	}
+
+	// 使用控制台日志记录器，输出到标准输出（stdout/stderr）
+	logger := projlogger.NewConsoleLogger(enableDebug, enableInfo, enableWarn, enableError)
 	projlogger.SetGlobalLogger(logger)
 
 	return nil

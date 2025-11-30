@@ -18,17 +18,20 @@ import (
 const Version = "0.0.26"
 
 func main() {
-	// 命令行参数
+	// 命令行参数（所有flag必须在flag.Parse()之前定义）
 	var (
-		url      = flag.String("url", "", "目标 HTTPS URL，例如 https://example.com/path")
-		method   = flag.String("X", "GET", "HTTP 方法：GET/POST/HEAD 等")
-		ua       = flag.String("ua", "", "自定义 User-Agent")
-		timeout  = flag.Duration("timeout", 30*time.Second, "请求超时时间")
-		head     = flag.Bool("head", false, "使用 HEAD 请求进行快速探测")
-		version  = flag.Bool("version", false, "显示版本号")
-		proxy    = flag.String("proxy", "", "TUIC代理服务器地址 (host:port)，如果提供则通过代理发送请求")
-		token    = flag.String("token", "", "TUIC认证令牌（使用代理时必需）")
-		useProxy = flag.Bool("use-proxy", false, "使用TUIC代理模式")
+		url           = flag.String("url", "", "目标 HTTPS URL，例如 https://example.com/path")
+		method        = flag.String("X", "GET", "HTTP 方法：GET/POST/HEAD 等")
+		ua            = flag.String("ua", "", "自定义 User-Agent")
+		timeout       = flag.Duration("timeout", 30*time.Second, "请求超时时间")
+		head          = flag.Bool("head", false, "使用 HEAD 请求进行快速探测")
+		version       = flag.Bool("version", false, "显示版本号")
+		proxy         = flag.String("proxy", "", "TUIC代理服务器地址 (host:port)，如果提供则通过代理发送请求")
+		token         = flag.String("token", "", "TUIC认证令牌（使用代理时必需）")
+		useProxy      = flag.Bool("use-proxy", false, "使用TUIC代理模式")
+		concurrentTest = flag.Bool("concurrent-test", false, "运行并发测试")
+		concurrency   = flag.Int("concurrency", 10, "并发数（仅用于并发测试）")
+		requests      = flag.Int("requests", 100, "总请求数（仅用于并发测试）")
 	)
 	flag.Parse()
 
@@ -37,16 +40,13 @@ func main() {
 		os.Exit(0)
 	}
 
-	// 检查是否是并发测试模式（需要在flag.Parse之前定义）
-	concurrentTest := flag.Bool("concurrent-test", false, "运行并发测试")
-	
 	// 如果使用代理模式，调用TUIC客户端
 	if *useProxy || *proxy != "" || *concurrentTest {
 		if *concurrentTest {
-			ConcurrentTestMain()
+			ConcurrentTestMainWithFlags(*proxy, *token, *url, *concurrency, *requests, *timeout)
 			return
 		}
-		
+
 		// 验证必需参数
 		if *proxy == "" {
 			fmt.Fprintf(os.Stderr, "错误: 使用代理模式时必须提供 -proxy 参数\n")

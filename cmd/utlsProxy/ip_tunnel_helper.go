@@ -81,8 +81,8 @@ func (h *IPTunnelHandler) processOutgoingResponses(tunnel *IPTunnel) {
 func (h *IPTunnelHandler) sendIPPacket(tunnel *IPTunnel, ipPacket []byte) error {
 	// 构建TUIC PACKET命令: [版本(1字节)][命令(1字节)][长度(2字节)][IP数据包]
 	packet := make([]byte, 4+len(ipPacket))
-	packet[0] = 5  // 版本
-	packet[1] = 1  // PACKET命令
+	packet[0] = 5 // 版本
+	packet[1] = 1 // PACKET命令
 	binary.BigEndian.PutUint16(packet[2:4], uint16(len(ipPacket)))
 	copy(packet[4:], ipPacket)
 
@@ -102,16 +102,16 @@ func (h *IPTunnelHandler) buildIPv4Packet(srcIP, dstIP net.IP, protocol byte, pa
 	packet := make([]byte, totalLen)
 
 	// IPv4包头
-	packet[0] = 0x45                           // 版本(4) + IHL(5)
-	packet[1] = 0x00                           // TOS
+	packet[0] = 0x45                                          // 版本(4) + IHL(5)
+	packet[1] = 0x00                                          // TOS
 	binary.BigEndian.PutUint16(packet[2:4], uint16(totalLen)) // 总长度
-	packet[4] = 0x00                           // 标识
+	packet[4] = 0x00                                          // 标识
 	packet[5] = 0x00
-	packet[6] = 0x40                           // 标志 + 片偏移
+	packet[6] = 0x40 // 标志 + 片偏移
 	packet[7] = 0x00
-	packet[8] = 64                             // TTL
-	packet[9] = protocol                       // 协议
-	packet[10] = 0                             // 校验和（简化，不计算）
+	packet[8] = 64       // TTL
+	packet[9] = protocol // 协议
+	packet[10] = 0       // 校验和（简化，不计算）
 	packet[11] = 0
 
 	// 源IP地址
@@ -145,12 +145,12 @@ func (h *IPTunnelHandler) buildTCPPacket(srcIP net.IP, srcPort uint16, dstIP net
 	packet := make([]byte, totalLen)
 
 	// TCP包头
-	binary.BigEndian.PutUint16(packet[0:2], srcPort)  // 源端口
-	binary.BigEndian.PutUint16(packet[2:4], dstPort)  // 目标端口
-	binary.BigEndian.PutUint32(packet[4:8], 0)        // 序列号（简化）
-	binary.BigEndian.PutUint32(packet[8:12], 0)       // 确认号（简化）
-	packet[12] = byte((headerLen / 4) << 4)           // 数据偏移
-	packet[13] = 0                                     // 标志位
+	binary.BigEndian.PutUint16(packet[0:2], srcPort) // 源端口
+	binary.BigEndian.PutUint16(packet[2:4], dstPort) // 目标端口
+	binary.BigEndian.PutUint32(packet[4:8], 0)       // 序列号（简化）
+	binary.BigEndian.PutUint32(packet[8:12], 0)      // 确认号（简化）
+	packet[12] = byte((headerLen / 4) << 4)          // 数据偏移
+	packet[13] = 0                                   // 标志位
 	if syn {
 		packet[13] |= 0x02 // SYN
 	}
@@ -160,10 +160,10 @@ func (h *IPTunnelHandler) buildTCPPacket(srcIP net.IP, srcPort uint16, dstIP net
 	if ack {
 		packet[13] |= 0x10 // ACK
 	}
-	binary.BigEndian.PutUint16(packet[14:16], 65535)  // 窗口大小
-	packet[16] = 0                                     // 校验和（简化，不计算）
+	binary.BigEndian.PutUint16(packet[14:16], 65535) // 窗口大小
+	packet[16] = 0                                   // 校验和（简化，不计算）
 	packet[17] = 0
-	packet[18] = 0                                     // 紧急指针
+	packet[18] = 0 // 紧急指针
 	packet[19] = 0
 
 	// 负载
@@ -180,10 +180,10 @@ func (h *IPTunnelHandler) sendTCPRST(tunnel *IPTunnel, srcIP net.IP, srcPort uin
 	tcpRST := h.buildTCPPacket(
 		dstIP, dstPort, // 源IP/端口变目标
 		srcIP, srcPort, // 目标IP/端口变源
-		nil,            // 无负载
-		false,          // 不是SYN
-		false,          // 不是FIN
-		true,           // ACK标志
+		nil,   // 无负载
+		false, // 不是SYN
+		false, // 不是FIN
+		true,  // ACK标志
 	)
 	tcpRST[13] |= 0x04 // RST标志
 

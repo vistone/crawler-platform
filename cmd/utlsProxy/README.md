@@ -2,12 +2,20 @@
 
 ## ⚠️ 重要说明
 
-**当前实现状态**: 本实现目前是**基于QUIC的TCP代理服务器**，而不是完整的TUIC协议实现。
+**TUIC协议的正确理解**：
 
-虽然使用了QUIC协议作为传输层，但**并没有实现真正的TUN层功能**（IP数据包隧道）。当前实现本质上是：
-- QUIC传输层（已实现）
-- TCP连接代理（已实现）
-- **缺少真正的TUN层**（IP数据包处理）
+**TUIC ≠ TUN + QUIC**
+
+- **TUN设备**：网络层（L3）虚拟设备，用于捕获/注入IP数据包
+- **QUIC协议**：传输层（L4）协议，提供可靠、安全、高效的数据传输
+- **TUIC协议**：应用层（L7）协议，专门用于代理流量的数据交换协议
+
+**当前实现状态**：
+
+- ✅ **QUIC传输层**（L4）：完全实现
+- ✅ **TUIC协议层**（L7）：基本实现，支持CONNECT和PACKET命令
+- ✅ **IP数据包处理**（L3）：已实现，支持TCP/UDP数据包解析和转发
+- ⚠️ **协议完整性**：部分实现，部分特性待完善
 
 ## 概述
 
@@ -22,22 +30,30 @@ UTLSProxy 是一个基于 QUIC 协议的代理服务器，部署在 VPS 上，�
 - **配置灵活**: 支持命令行参数和配置文件
 - **优雅关闭**: 支持信号处理和资源清理
 
-## ⚠️ 实现限制
+## ⚠️ 实现状态
 
-### 当前实现的不足
+### 已实现的功能
 
-1. **不是真正的TUN层**: 当前实现是TCP代理，不是IP数据包隧道
-2. **协议简化**: 没有完全实现TUIC v5协议的所有特性
-3. **功能限制**: 只支持TCP连接代理，不支持UDP/ICMP等其他协议
+1. **QUIC传输层**：完全实现，支持TLS、多流、0-RTT等特性
+2. **TUIC协议**：
+   - ✅ CONNECT命令：TCP代理模式
+   - ✅ PACKET命令：IP数据包隧道模式
+3. **IP数据包处理**：
+   - ✅ IPv4/IPv6数据包解析
+   - ✅ TCP连接管理和状态机
+   - ✅ UDP数据包转发
+   - ✅ IP数据包封装和回传
 
-### 真正的TUN层应该包括
+### 待完善的功能
 
-- IP数据包解析和处理
-- 支持所有IP层协议（TCP/UDP/ICMP等）
-- 网络层路由和转发
-- 完整的协议状态管理
+1. **协议支持**：ICMP消息处理（待实现）
+2. **协议完整性**：
+   - ⚠️ Token验证机制（基本实现，待完善）
+   - ⚠️ 协议版本协商（待实现）
+   - ⚠️ 完整的错误码定义（部分实现）
+3. **性能优化**：流量控制、拥塞控制优化
 
-详细说明请参考: [README_TUN.md](README_TUN.md)
+详细说明请参考: [TUIC_PROTOCOL.md](TUIC_PROTOCOL.md)
 
 ## 编译
 
@@ -177,9 +193,19 @@ UTLSClient (热连接池)
 
 ### TUIC协议实现
 
-当前实现是简化版本，支持基本的TUIC v5协议格式。完整的TUIC协议实现可以参考：
-- https://github.com/EAimTY/tuic-go
-- https://github.com/EAimTY/TUIC
+当前实现支持基本的TUIC v5协议格式。完整的TUIC V5协议标准请参考：
+
+**官方资源**：
+- [TUIC V5 协议规范](https://github.com/apernet/tuic/blob/v5/protocol.md) - **官方 V5 规范文档**
+- [TUIC 主仓库](https://github.com/apernet/tuic) - V5 分支
+
+**详细文档**：
+- [TUIC_V5_STANDARD.md](TUIC_V5_STANDARD.md) - TUIC V5 标准实现指南
+- [TUIC_PROTOCOL.md](TUIC_PROTOCOL.md) - 协议实现说明
+- [TUIC_PROTOCOL_CLARIFICATION.md](TUIC_PROTOCOL_CLARIFICATION.md) - 协议理解澄清
+
+**参考实现**：
+- [TUIC-Server (Go)](https://github.com/apernet/tuic-go) - 官方 Go 实现
 
 ### 扩展功能
 
