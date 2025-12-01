@@ -1,18 +1,29 @@
 package grpcserver
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"io"
+	"io/fs"
 	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"reflect"
 	"sync"
 	"time"
 
 	"crawler-platform/cmd/grpcserver/tasksmanager"
 	"crawler-platform/logger"
+	"crawler-platform/utlsclient"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 // Server gRPC 服务器结构
@@ -37,6 +48,10 @@ type Server struct {
 	messages   map[string]*tasksmanager.NodeMessage // 消息队列
 	messagesMu sync.RWMutex
 
+	// 任务长度统计
+	totalTaskLength int64 // 累计接收到的任务总长度（字节）
+	taskLengthMu    sync.Mutex
+
 	// 记录节点注册时间，用于判断新节点
 	nodeRegisterTimes  map[string]time.Time       // 节点UUID -> 注册时间
 	lastHeartbeatNodes map[string]map[string]bool // 客户端UUID -> 已知节点UUID集合（用于返回新节点）
@@ -47,12 +62,49 @@ type Server struct {
 	// 节点连接管理器（用于自动发现和连接其他节点）
 	nodeConnector *NodeConnector
 
+	// TLS 配置
+	tlsConfig *tls.Config
+
 	// 日志记录器
 	logger logger.Logger
+
+	// 本地 IP 池（可选，用于 IP 地址管理）
+	ipPool IPPoolInterface
+
+	// 热连接池管理器（用于执行下载任务）
+	hotConnPoolManager *HotConnPoolManager
+
+	// 任务执行配置（用于构建 URL 和选择热连接池）
+	// 这些配置字段从 config.go 中的 Config 结构体传递过来
+	rockTreeDataEnable           bool
+	rockTreeDataHostName         string
+	rockTreeDataBulkMetadataPath string
+	rockTreeDataNodeDataPath     string
+	rockTreeDataImageryDataPath  string
+
+	googleEarthDesktopDataEnable      bool
+	googleEarthDesktopDataHostName    string
+	googleEarthDesktopDataQ2Path      string
+	googleEarthDesktopDataImageryPath string
+	googleEarthDesktopDataTerrainPath string
+}
+
+// IPPoolInterface 定义 IP 池接口（与 localippool.IPPool 接口兼容，避免循环导入）
+type IPPoolInterface interface {
+	GetIP() net.IP
+	ReleaseIP(ip net.IP)
+	MarkIPUnused(ip net.IP)
+	SetTargetIPCount(count int)
+	Close() error
 }
 
 // NewServer 创建新的 gRPC 服务器实例
 func NewServer(address, port string) *Server {
+	return NewServerWithTLS(address, port, nil)
+}
+
+// NewServerWithTLS 创建新的 gRPC 服务器实例（带 TLS 配置）
+func NewServerWithTLS(address, port string, tlsConfig *tls.Config) *Server {
 	nodeID := generateNodeID()
 
 	s := &Server{
@@ -65,6 +117,7 @@ func NewServer(address, port string) *Server {
 		messages:           make(map[string]*tasksmanager.NodeMessage),
 		nodeRegisterTimes:  make(map[string]time.Time),
 		lastHeartbeatNodes: make(map[string]map[string]bool),
+		tlsConfig:          tlsConfig,
 		logger:             logger.GetGlobalLogger(),
 	}
 
@@ -90,6 +143,44 @@ func (s *Server) SetBootstrapNodes(addresses []string) {
 			}
 		}()
 	}
+}
+
+// SetIPPool 设置本地 IP 池
+// 输入: ipPool - IP 池接口实例
+func (s *Server) SetIPPool(ipPool IPPoolInterface) {
+	s.ipPool = ipPool
+	if ipPool != nil {
+		s.logger.Info("本地 IP 池已设置到服务器")
+	}
+}
+
+// GetIPPool 获取本地 IP 池
+// 输出: IPPoolInterface - IP 池接口实例（可能为 nil）
+func (s *Server) GetIPPool() IPPoolInterface {
+	return s.ipPool
+}
+
+// SetHotConnPoolManager 设置热连接池管理器
+func (s *Server) SetHotConnPoolManager(manager *HotConnPoolManager) {
+	s.hotConnPoolManager = manager
+}
+
+// SetRockTreeDataConfig 设置 RockTree 数据配置（从 config.go 的 Config 结构体传递）
+func (s *Server) SetRockTreeDataConfig(enable bool, hostName, bulkMetadataPath, nodeDataPath, imageryDataPath string) {
+	s.rockTreeDataEnable = enable
+	s.rockTreeDataHostName = hostName
+	s.rockTreeDataBulkMetadataPath = bulkMetadataPath
+	s.rockTreeDataNodeDataPath = nodeDataPath
+	s.rockTreeDataImageryDataPath = imageryDataPath
+}
+
+// SetGoogleEarthDesktopDataConfig 设置 Google Earth Desktop 数据配置（从 config.go 的 Config 结构体传递）
+func (s *Server) SetGoogleEarthDesktopDataConfig(enable bool, hostName, q2Path, imageryPath, terrainPath string) {
+	s.googleEarthDesktopDataEnable = enable
+	s.googleEarthDesktopDataHostName = hostName
+	s.googleEarthDesktopDataQ2Path = q2Path
+	s.googleEarthDesktopDataImageryPath = imageryPath
+	s.googleEarthDesktopDataTerrainPath = terrainPath
 }
 
 // generateNodeID 生成节点 ID
@@ -138,7 +229,19 @@ func (s *Server) Start() error {
 		return fmt.Errorf("监听端口失败: %w", err)
 	}
 
-	s.grpcServer = grpc.NewServer()
+	// 配置 gRPC 服务器选项
+	var opts []grpc.ServerOption
+
+	// 如果配置了 TLS，使用 TLS 凭证
+	if s.tlsConfig != nil {
+		creds := credentials.NewTLS(s.tlsConfig)
+		opts = append(opts, grpc.Creds(creds))
+		s.logger.Info("gRPC 服务器已启用 TLS 加密")
+	} else {
+		s.logger.Info("gRPC 服务器未启用 TLS（使用明文连接）")
+	}
+
+	s.grpcServer = grpc.NewServer(opts...)
 	tasksmanager.RegisterTasksManagerServer(s.grpcServer, s)
 
 	s.logger.Info("gRPC 服务器启动在 %s:%s", s.address, s.port)
@@ -154,6 +257,15 @@ func (s *Server) Stop() {
 	// 停止节点连接管理器
 	if s.nodeConnector != nil {
 		s.nodeConnector.Stop()
+	}
+
+	// 关闭 IP 池（如果存在）
+	if s.ipPool != nil {
+		if err := s.ipPool.Close(); err != nil {
+			s.logger.Warn("关闭 IP 池时出错: %v", err)
+		} else {
+			s.logger.Info("IP 池已关闭")
+		}
 	}
 
 	if s.grpcServer != nil {
@@ -252,6 +364,172 @@ func (s *Server) GetGrpcServerNodeInfoList(ctx context.Context, req *tasksmanage
 	}, nil
 }
 
+// buildPathForTask 根据任务类型和参数构建路径（不包含域名，只返回路径部分）
+// 返回: dataType, hostName, path, error
+func (s *Server) buildPathForTask(taskType tasksmanager.TaskType, tileKey string, epoch int32, imageryEpoch *int32) (string, string, string, error) {
+	// 根据任务类型选择配置和路径模板
+	switch taskType {
+	case tasksmanager.TaskType_TASK_TYPE_GOOGLE_EARTH_Q2:
+		if !s.googleEarthDesktopDataEnable {
+			return "", "", "", fmt.Errorf("GoogleEarthDesktopData 配置未启用")
+		}
+		hostName := s.googleEarthDesktopDataHostName
+		pathTemplate := s.googleEarthDesktopDataQ2Path
+		if hostName == "" || pathTemplate == "" {
+			return "", "", "", fmt.Errorf("GoogleEarthDesktopData Q2 配置不完整")
+		}
+		path := fmt.Sprintf(pathTemplate, tileKey, epoch)
+		return "GoogleEarthDesktopData", hostName, path, nil
+
+	case tasksmanager.TaskType_TASK_TYPE_GOOGLE_EARTH_IMAGERY:
+		if !s.googleEarthDesktopDataEnable {
+			return "", "", "", fmt.Errorf("GoogleEarthDesktopData 配置未启用")
+		}
+		if imageryEpoch == nil {
+			return "", "", "", fmt.Errorf("Imagery 任务需要 imageryEpoch 参数")
+		}
+		hostName := s.googleEarthDesktopDataHostName
+		pathTemplate := s.googleEarthDesktopDataImageryPath
+		if hostName == "" || pathTemplate == "" {
+			return "", "", "", fmt.Errorf("GoogleEarthDesktopData Imagery 配置不完整")
+		}
+		path := fmt.Sprintf(pathTemplate, tileKey, *imageryEpoch)
+		return "GoogleEarthDesktopData", hostName, path, nil
+
+	case tasksmanager.TaskType_TASK_TYPE_GOOGLE_EARTH_TERRAIN:
+		if !s.googleEarthDesktopDataEnable {
+			return "", "", "", fmt.Errorf("GoogleEarthDesktopData 配置未启用")
+		}
+		hostName := s.googleEarthDesktopDataHostName
+		pathTemplate := s.googleEarthDesktopDataTerrainPath
+		if hostName == "" || pathTemplate == "" {
+			return "", "", "", fmt.Errorf("GoogleEarthDesktopData Terrain 配置不完整")
+		}
+		path := fmt.Sprintf(pathTemplate, tileKey, epoch)
+		return "GoogleEarthDesktopData", hostName, path, nil
+
+	default:
+		return "", "", "", fmt.Errorf("不支持的任务类型: %v", taskType)
+	}
+}
+
+// executeTaskWithHotPool 使用热连接池执行任务
+// 参数: dataType - 数据类型, hostName - 主机名（用于从池中获取连接）, path - 请求路径（包含查询参数）
+func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *tasksmanager.TaskRequest) ([]byte, int32, error) {
+	if s.hotConnPoolManager == nil {
+		return nil, 0, fmt.Errorf("热连接池管理器未设置")
+	}
+
+	// 获取对应的热连接池
+	pool, exists := s.hotConnPoolManager.GetPool(dataType)
+	if !exists {
+		return nil, 0, fmt.Errorf("数据类型 %s 的热连接池不存在", dataType)
+	}
+
+	// 记录各个阶段的时间
+	totalStart := time.Now()
+
+	// 从池中通过主机名获取连接（复用已预热的连接）
+	connStart := time.Now()
+	conn, err := pool.GetConnection(hostName)
+	if err != nil {
+		return nil, 0, fmt.Errorf("获取连接失败: %w", err)
+	}
+	defer pool.PutConnection(conn)
+	connTime := time.Since(connStart)
+
+	if connTime > 500*time.Millisecond {
+		s.logger.Debug("⚠️ 获取连接耗时: %v (数据类型: %s)", connTime, dataType)
+	}
+
+	// 获取连接的 IP 地址
+	targetIP := conn.TargetIP()
+	buildURLStart := time.Now()
+
+	// 使用 IP 地址和路径构建请求 URL（热连接是通过 IP 直接访问的）
+	// IPv6 地址需要用方括号包裹
+	var requestURL string
+	// 使用 net.ParseIP 更准确地判断是否为 IPv6 地址
+	ip := net.ParseIP(targetIP)
+	if ip != nil && ip.To4() == nil {
+		// IPv6 地址（To4() 返回 nil 表示是 IPv6 地址）
+		requestURL = fmt.Sprintf("https://[%s]%s", targetIP, path)
+	} else {
+		// IPv4 地址
+		requestURL = fmt.Sprintf("https://%s%s", targetIP, path)
+	}
+
+	// 创建 HTTP 客户端
+	client := utlsclient.NewUTLSClient(conn)
+	client.SetTimeout(30 * time.Second)
+
+	// 确定 HTTP 方法
+	method := "GET"
+	if req.TaskMethod != nil {
+		switch *req.TaskMethod {
+		case tasksmanager.TaskMethod_TASK_METHOD_POST:
+			method = "POST"
+		case tasksmanager.TaskMethod_TASK_METHOD_PUT:
+			method = "PUT"
+		case tasksmanager.TaskMethod_TASK_METHOD_DELETE:
+			method = "DELETE"
+		default:
+			method = "GET"
+		}
+	}
+
+	// 创建 HTTP 请求
+	var bodyReader io.Reader
+	if len(req.TaskBody) > 0 {
+		bodyReader = bytes.NewReader(req.TaskBody)
+	}
+
+	httpReq, err := http.NewRequest(method, requestURL, bodyReader)
+	if err != nil {
+		return nil, 0, fmt.Errorf("创建 HTTP 请求失败: %w", err)
+	}
+
+	// 设置 Host 头为域名（用于 SNI 和 Host 头）
+	httpReq.Host = hostName
+	httpReq.Header.Set("Host", hostName)
+
+	// 设置请求头
+	if bodyReader != nil {
+		httpReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(req.TaskBody)))
+	}
+
+	// 发送请求
+	requestStart := time.Now()
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, 0, fmt.Errorf("HTTP 请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	requestTime := time.Since(requestStart)
+
+	// 读取响应体
+	readStart := time.Now()
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, 0, fmt.Errorf("读取响应体失败: %w", err)
+	}
+	readTime := time.Since(readStart)
+
+	totalTime := time.Since(totalStart)
+
+	// 性能日志（仅在总时间超过阈值时输出详细信息）
+	if totalTime > 2*time.Second {
+		s.logger.Debug("⏱️ 任务执行性能分析 (数据类型: %s, 路径: %s):", dataType, path)
+		s.logger.Debug("  获取连接: %v", connTime)
+		s.logger.Debug("  构建URL: %v", time.Since(buildURLStart))
+		s.logger.Debug("  HTTP请求: %v", requestTime)
+		s.logger.Debug("  读取响应: %v (大小: %d 字节)", readTime, len(responseBody))
+		s.logger.Debug("  总耗时: %v", totalTime)
+	}
+
+	return responseBody, int32(resp.StatusCode), nil
+}
+
 // SubmitTask 提交任务请求
 func (s *Server) SubmitTask(ctx context.Context, req *tasksmanager.TaskRequest) (*tasksmanager.TaskResponse, error) {
 	taskID := generateTaskID()
@@ -260,16 +538,127 @@ func (s *Server) SubmitTask(ctx context.Context, req *tasksmanager.TaskRequest) 
 	s.tasks[taskID] = req
 	s.tasksMu.Unlock()
 
-	s.logger.Info("收到任务请求: %s, 类型: %s, URI: %s", taskID, req.TaskType, req.TaskUri)
+	// 使用反射或直接字段访问获取 TileKey、epoch 等字段
+	// 注意：proto 文件需要重新生成后才能访问这些字段
+	// 这里先尝试通过反射访问，如果失败则返回错误提示需要重新生成 proto
+	tileKey, epoch, imageryEpoch, err := s.extractTaskParams(req)
+	if err != nil {
+		return nil, fmt.Errorf("提取任务参数失败: %w（提示：需要重新生成 proto 文件）", err)
+	}
 
-	// TODO: 实际执行任务逻辑
+	// 计算任务长度并累加
+	taskLength := int64(0)
+	if req.TaskBody != nil {
+		taskLength += int64(len(req.TaskBody))
+	}
+	taskLength += int64(len(req.TaskClientId))
+	taskLength += int64(len(tileKey))
+	taskLength += 4 // epoch (int32)
 
-	return &tasksmanager.TaskResponse{
-		TaskClientId: req.TaskClientId,
-		TaskType:     req.TaskType,
-		TaskUri:      req.TaskUri,
-		// TaskResponseBody 和 TaskResponseStatusCode 需要在任务执行完成后设置
-	}, nil
+	s.taskLengthMu.Lock()
+	s.totalTaskLength += taskLength
+	totalLength := s.totalTaskLength
+	s.taskLengthMu.Unlock()
+
+	s.logger.Debug("收到任务请求: %s, 类型: %v, TileKey: %s, epoch: %d, 任务长度: %d 字节, 累计总长度: %d 字节 (%s)",
+		taskID, req.TaskType, tileKey, epoch, taskLength, totalLength, formatBytes(totalLength))
+
+	// 构建路径（不包含域名，只返回路径部分）
+	dataType, hostName, path, err := s.buildPathForTask(req.TaskType, tileKey, epoch, imageryEpoch)
+	if err != nil {
+		return nil, fmt.Errorf("构建路径失败: %w", err)
+	}
+
+	s.logger.Debug("任务 %s 构建的路径: %s (数据类型: %s, 主机名: %s)", taskID, path, dataType, hostName)
+
+	// 使用热连接池执行任务（通过主机名获取连接，使用 IP 地址直接访问）
+	responseBody, statusCode, err := s.executeTaskWithHotPool(dataType, hostName, path, req)
+	if err != nil {
+		s.logger.Warn("任务执行失败: %s, 错误: %v", taskID, err)
+		// 返回错误响应
+		errorStatusCode := int32(500)
+		errorBody := []byte(fmt.Sprintf("任务执行失败: %v", err))
+		return &tasksmanager.TaskResponse{
+			TaskClientId:           req.TaskClientId,
+			TaskType:               req.TaskType,
+			TaskResponseBody:       errorBody,
+			TaskResponseStatusCode: &errorStatusCode,
+		}, nil
+	}
+
+	s.logger.Debug("任务 %s 执行成功，状态码: %d, 响应体长度: %d 字节", taskID, statusCode, len(responseBody))
+
+	// 构建响应
+	response := &tasksmanager.TaskResponse{
+		TaskClientId:           req.TaskClientId,
+		TaskType:               req.TaskType,
+		TaskResponseBody:       responseBody,
+		TaskResponseStatusCode: &statusCode,
+	}
+
+	// 设置 TileKey、epoch 等字段（需要 proto 重新生成后支持）
+	s.setResponseParams(response, tileKey, epoch, imageryEpoch)
+
+	return response, nil
+}
+
+// extractTaskParams 提取任务参数（使用反射访问新字段，待 proto 重新生成后改为直接字段访问）
+func (s *Server) extractTaskParams(req *tasksmanager.TaskRequest) (tileKey string, epoch int32, imageryEpoch *int32, err error) {
+	// 使用反射访问字段（因为 proto 可能还没重新生成）
+	// 注意：这里假设字段名是 TileKey、Epoch、ImageryEpoch
+	// 如果 proto 已经重新生成，可以直接使用 req.TileKey, req.Epoch 等
+	reqValue := reflect.ValueOf(req).Elem()
+
+	tileKeyField := reqValue.FieldByName("TileKey")
+	if !tileKeyField.IsValid() || tileKeyField.Kind() != reflect.String {
+		return "", 0, nil, fmt.Errorf("TileKey 字段不存在或类型不匹配")
+	}
+	tileKey = tileKeyField.String()
+
+	epochField := reqValue.FieldByName("Epoch")
+	if !epochField.IsValid() || epochField.Kind() != reflect.Int32 {
+		return "", 0, nil, fmt.Errorf("Epoch 字段不存在或类型不匹配")
+	}
+	epoch = int32(epochField.Int())
+
+	imageryEpochField := reqValue.FieldByName("ImageryEpoch")
+	if imageryEpochField.IsValid() && imageryEpochField.Kind() == reflect.Ptr && !imageryEpochField.IsNil() {
+		if imageryEpochField.Elem().Kind() == reflect.Int32 {
+			val := int32(imageryEpochField.Elem().Int())
+			imageryEpoch = &val
+		}
+	}
+
+	return tileKey, epoch, imageryEpoch, nil
+}
+
+// setResponseParams 设置响应参数（使用反射，待 proto 重新生成后改为直接字段访问）
+func (s *Server) setResponseParams(resp *tasksmanager.TaskResponse, tileKey string, epoch int32, imageryEpoch *int32) {
+	respValue := reflect.ValueOf(resp).Elem()
+
+	if tileKeyField := respValue.FieldByName("TileKey"); tileKeyField.IsValid() && tileKeyField.CanSet() {
+		tileKeyField.SetString(tileKey)
+	}
+
+	if epochField := respValue.FieldByName("Epoch"); epochField.IsValid() && epochField.CanSet() {
+		epochField.SetInt(int64(epoch))
+	}
+
+	if imageryEpoch != nil {
+		if imageryEpochField := respValue.FieldByName("ImageryEpoch"); imageryEpochField.IsValid() && imageryEpochField.CanSet() {
+			ptrValue := reflect.New(reflect.TypeOf(int32(0)))
+			ptrValue.Elem().SetInt(int64(*imageryEpoch))
+			imageryEpochField.Set(ptrValue)
+		}
+	}
+}
+
+// GetTotalTaskLength 获取累计接收到的任务总长度（字节）
+// 输出: int64 - 累计任务总长度（字节）
+func (s *Server) GetTotalTaskLength() int64 {
+	s.taskLengthMu.Lock()
+	defer s.taskLengthMu.Unlock()
+	return s.totalTaskLength
 }
 
 // RegisterClient 客户端注册（客户端专用接口，与服务器节点完全分离）
@@ -654,4 +1043,139 @@ func generateTaskID() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return fmt.Sprintf("%x", b)
+}
+
+// LoadTLSConfigFromCertsDir 从 certs 目录加载 TLS 配置
+// 自动查找 certs 目录下的 .pem 证书和密钥文件
+// 支持的命名格式：
+//   - server.crt / server.key
+//   - cert.pem / key.pem
+//   - *.crt / *.key
+//   - *.pem (证书和密钥都在同一个目录)
+func LoadTLSConfigFromCertsDir(certsDir string) (*tls.Config, error) {
+	if certsDir == "" {
+		return nil, fmt.Errorf("证书目录路径不能为空")
+	}
+
+	// 检查目录是否存在
+	info, err := os.Stat(certsDir)
+	if err != nil {
+		return nil, fmt.Errorf("证书目录不存在或无法访问: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("指定的路径不是目录: %s", certsDir)
+	}
+
+	var certFile, keyFile string
+
+	// 查找证书和密钥文件
+	err = filepath.WalkDir(certsDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		ext := filepath.Ext(path)
+		baseName := filepath.Base(path)
+
+		// 查找证书文件
+		if certFile == "" {
+			if ext == ".crt" || ext == ".pem" {
+				// 优先匹配 server.crt, cert.pem
+				if baseName == "server.crt" || baseName == "cert.pem" {
+					certFile = path
+				} else if certFile == "" && (ext == ".crt" || (ext == ".pem" && baseName != "key.pem" && baseName != "server.key")) {
+					// 如果没有找到优先文件，使用第一个匹配的
+					certFile = path
+				}
+			}
+		}
+
+		// 查找密钥文件
+		if keyFile == "" {
+			if ext == ".key" || (ext == ".pem" && (baseName == "key.pem" || baseName == "server.key")) {
+				keyFile = path
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("遍历证书目录失败: %w", err)
+	}
+
+	if certFile == "" {
+		return nil, fmt.Errorf("在 %s 目录中未找到证书文件（.crt 或 .pem）", certsDir)
+	}
+	if keyFile == "" {
+		return nil, fmt.Errorf("在 %s 目录中未找到密钥文件（.key 或 key.pem）", certsDir)
+	}
+
+	// 加载证书和密钥
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("加载证书和密钥失败: %w", err)
+	}
+
+	// 创建 TLS 配置
+	config := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+
+	// 尝试加载 CA 证书（用于客户端验证，可选）
+	caCertFile := filepath.Join(certsDir, "ca.crt")
+	if _, err := os.Stat(caCertFile); err == nil {
+		caCertPEM, err := os.ReadFile(caCertFile)
+		if err == nil {
+			caCertPool := x509.NewCertPool()
+			if caCertPool.AppendCertsFromPEM(caCertPEM) {
+				config.ClientCAs = caCertPool
+				config.ClientAuth = tls.RequireAndVerifyClientCert
+			}
+		}
+	}
+
+	return config, nil
+}
+
+// LoadTLSConfigFromFiles 从指定的证书和密钥文件加载 TLS 配置
+func LoadTLSConfigFromFiles(certFile, keyFile string) (*tls.Config, error) {
+	if certFile == "" || keyFile == "" {
+		return nil, fmt.Errorf("证书文件和密钥文件路径不能为空")
+	}
+
+	// 加载证书和密钥
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("加载证书和密钥失败: %w", err)
+	}
+
+	// 创建 TLS 配置
+	config := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+
+	return config, nil
+}
+
+// formatBytes 格式化字节数为人类可读的格式（B, KB, MB, GB）
+// 输入: bytes - 字节数
+// 输出: string - 格式化后的字符串
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.2f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }

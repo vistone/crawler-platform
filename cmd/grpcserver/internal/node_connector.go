@@ -9,6 +9,7 @@ import (
 
 	"crawler-platform/cmd/grpcserver/tasksmanager"
 	"crawler-platform/logger"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -26,7 +27,7 @@ type NodeConnector struct {
 	connectedNodesMu sync.RWMutex
 
 	// 节点连接映射 (nodeUUID -> grpc.Conn)
-	nodeConnections  map[string]*grpc.ClientConn
+	nodeConnections   map[string]*grpc.ClientConn
 	nodeConnectionsMu sync.RWMutex
 
 	// 已知节点列表
@@ -77,9 +78,9 @@ func (nc *NodeConnector) Bootstrap(bootstrapAddresses []string) error {
 			actualAddr = strings.Replace(addr, "0.0.0.0", "127.0.0.1", 1)
 			nc.logger.Info("引导节点地址 %s 转换为 %s", addr, actualAddr)
 		}
-		
+
 		nc.logger.Info("尝试连接到引导节点: %s", actualAddr)
-		
+
 		conn, err := grpc.NewClient(actualAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
 			nc.logger.Warn("连接引导节点失败 %s: %v", addr, err)
@@ -87,12 +88,12 @@ func (nc *NodeConnector) Bootstrap(bootstrapAddresses []string) error {
 		}
 
 		client := tasksmanager.NewTasksManagerClient(conn)
-		
+
 		// 获取节点列表
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		nodeListResp, err := client.GetGrpcServerNodeInfoList(ctx, &tasksmanager.GrpcServerNodeInfoListRequest{})
 		cancel()
-		
+
 		if err != nil {
 			conn.Close()
 			nc.logger.Warn("从引导节点获取节点列表失败: %v", err)
@@ -107,7 +108,7 @@ func (nc *NodeConnector) Bootstrap(bootstrapAddresses []string) error {
 				nc.knownNodesMu.Lock()
 				nc.knownNodes[node.NodeUuid] = node
 				nc.knownNodesMu.Unlock()
-				
+
 				// 异步连接到节点
 				go nc.ConnectToNode(node)
 			}
@@ -116,7 +117,7 @@ func (nc *NodeConnector) Bootstrap(bootstrapAddresses []string) error {
 		// 向引导节点注册自己
 		hostname, _ := GetRealHostname()
 		sysInfo, _ := GetAllSystemInfo()
-		
+
 		nodeInfo := &tasksmanager.GrpcServerNodeInfo{
 			NodeUuid:           nc.nodeID,
 			NodeName:           hostname,
@@ -141,14 +142,14 @@ func (nc *NodeConnector) Bootstrap(bootstrapAddresses []string) error {
 
 		if err == nil && regResp.Success {
 			nc.logger.Info("已向引导节点注册，发现 %d 个已知节点", len(regResp.KnownNodes))
-			
+
 			// 连接到注册响应中的已知节点
 			for _, node := range regResp.KnownNodes {
 				if node.NodeUuid != nc.nodeID {
 					nc.knownNodesMu.Lock()
 					nc.knownNodes[node.NodeUuid] = node
 					nc.knownNodesMu.Unlock()
-					
+
 					go nc.ConnectToNode(node)
 				}
 			}
@@ -173,7 +174,7 @@ func (nc *NodeConnector) Bootstrap(bootstrapAddresses []string) error {
 // Stop 停止节点连接管理器
 func (nc *NodeConnector) Stop() {
 	close(nc.stopChan)
-	
+
 	// 关闭所有连接
 	nc.nodeConnectionsMu.Lock()
 	for _, conn := range nc.nodeConnections {
@@ -196,7 +197,7 @@ func (nc *NodeConnector) ConnectToNode(nodeInfo *tasksmanager.GrpcServerNodeInfo
 		nc.nodeConnectionsMu.RLock()
 		conn, connExists := nc.nodeConnections[nodeInfo.NodeUuid]
 		nc.nodeConnectionsMu.RUnlock()
-		
+
 		if connExists && conn != nil {
 			// 连接存在且有效，复用连接
 			nc.connectedNodesMu.RUnlock()
@@ -224,7 +225,7 @@ func (nc *NodeConnector) ConnectToNode(nodeInfo *tasksmanager.GrpcServerNodeInfo
 		nodeIP = "127.0.0.1"
 	}
 	nodeAddr := fmt.Sprintf("%s:%s", nodeIP, nodeInfo.NodePort)
-	
+
 	nc.logger.Info("正在连接到新节点: %s (%s)", nodeInfo.NodeUuid, nodeAddr)
 
 	// 建立 gRPC 连接
@@ -321,4 +322,3 @@ func (nc *NodeConnector) autoDiscoverAndConnect() {
 		}
 	}
 }
-

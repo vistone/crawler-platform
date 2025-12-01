@@ -1,47 +1,47 @@
 package main
 
 import (
+	"crawler-platform/scheduler"
+	"crawler-platform/utlsclient"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
-// Task 任务结构
-type Task struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	Type          string    `json:"type"`
-	Status        string    `json:"status"`
-	Priority      int       `json:"priority"`
-	Schedule      string    `json:"schedule"`
-	URL           string    `json:"url"`
-	Timeout       int       `json:"timeout"`
-	CronExpr      string    `json:"cronExpression,omitempty"`
-	LastExecution time.Time `json:"lastExecution"`
-	SuccessRate   float64   `json:"successRate"`
-	CreatedAt     time.Time `json:"createdAt"`
-}
-
-// Stats 统计信息
-type Stats struct {
-	TotalTasks  int     `json:"totalTasks"`
-	Running     int     `json:"running"`
-	Failed      int     `json:"failed"`
-	SuccessRate float64 `json:"successRate"`
-}
-
 var (
-	tasks []Task
-	stats Stats
+	taskQueue   *scheduler.TaskQueue
+	worker      *scheduler.Worker
+	ipManager   *IPManager
+	hotConnPool *utlsclient.UTLSHotConnPool
 )
 
 func main() {
-	// 初始化模拟数据
-	initMockData()
+	// 1. 初始化 Redis 任务队列
+	var err error
+	// 假设 Redis 运行在本地默认端口
+	taskQueue, err = scheduler.NewTaskQueue("localhost:6379", "", 0)
+	if err != nil {
+		log.Fatalf("无法连接 Redis: %v", err)
+	}
+	defer taskQueue.Close()
+
+	// 2. 初始化连接池
+	poolConfig := utlsclient.DefaultPoolConfig()
+	hotConnPool = utlsclient.NewUTLSHotConnPool(poolConfig)
+	// 注意：不在这里关闭热连接池，因为它是全局共享资源，应该保持运行状态
+
+	// 3. 启动 Worker
+	worker = scheduler.NewWorker("worker-1", taskQueue, hotConnPool)
+	worker.Start()
+	defer worker.Stop()
+
+	// 4. 初始化 IP 管理器
+	ipManager = NewIPManager()
 
 	// 获取Web目录的绝对路径
 	webDir := filepath.Join(".", "web")
@@ -58,6 +58,12 @@ func main() {
 	http.HandleFunc("/api/tasks/create", handleCreateTask)
 	http.HandleFunc("/api/stats", handleStats)
 	http.HandleFunc("/api/health", handleHealth)
+	http.HandleFunc("/api/ip/local", handleLocalIPs)
+	http.HandleFunc("/api/ip/local/", handleLocalIPDetail)
+	http.HandleFunc("/api/ip/whitelist", handleWhitelist)
+	http.HandleFunc("/api/ip/blacklist", handleBlacklist)
+	http.HandleFunc("/api/ip/settings", handleIPSettings)
+	http.HandleFunc("/api/pool/stats", handlePoolStats)
 
 	// 启动服务器
 	port := ":8080"
@@ -69,94 +75,19 @@ func main() {
 	log.Fatal(http.ListenAndServe(port, nil))
 }
 
-// 初始化模拟数据
-func initMockData() {
-	now := time.Now()
-	tasks = []Task{
-		{
-			ID:            "task-1",
-			Name:          "Google Earth 数据采集",
-			Type:          "google_earth",
-			Status:        "running",
-			Priority:      10,
-			Schedule:      "cron",
-			URL:           "https://kh.google.com/rt/earth/PlanetoidMetadata",
-			Timeout:       30,
-			CronExpr:      "0 */10 * * * *",
-			LastExecution: now.Add(-2 * time.Minute),
-			SuccessRate:   99.5,
-			CreatedAt:     now.Add(-24 * time.Hour),
-		},
-		{
-			ID:            "task-2",
-			Name:          "地形数据解析任务",
-			Type:          "custom",
-			Status:        "completed",
-			Priority:      8,
-			Schedule:      "interval",
-			URL:           "https://example.com/terrain",
-			Timeout:       30,
-			LastExecution: now.Add(-5 * time.Minute),
-			SuccessRate:   98.2,
-			CreatedAt:     now.Add(-48 * time.Hour),
-		},
-		{
-			ID:            "task-3",
-			Name:          "四叉树数据爬取",
-			Type:          "google_earth",
-			Status:        "completed",
-			Priority:      7,
-			Schedule:      "cron",
-			URL:           "https://kh.google.com/rt/earth",
-			Timeout:       30,
-			CronExpr:      "0 */15 * * * *",
-			LastExecution: now.Add(-10 * time.Minute),
-			SuccessRate:   97.8,
-			CreatedAt:     now.Add(-72 * time.Hour),
-		},
-		{
-			ID:            "task-4",
-			Name:          "批量URL采集",
-			Type:          "http",
-			Status:        "failed",
-			Priority:      5,
-			Schedule:      "once",
-			URL:           "https://example.com/api",
-			Timeout:       30,
-			LastExecution: now.Add(-15 * time.Minute),
-			SuccessRate:   85.3,
-			CreatedAt:     now.Add(-96 * time.Hour),
-		},
-		{
-			ID:            "task-5",
-			Name:          "定时数据同步",
-			Type:          "http",
-			Status:        "completed",
-			Priority:      6,
-			Schedule:      "cron",
-			URL:           "https://example.com/sync",
-			Timeout:       30,
-			CronExpr:      "0 0 */6 * * *",
-			LastExecution: now.Add(-20 * time.Minute),
-			SuccessRate:   99.1,
-			CreatedAt:     now.Add(-120 * time.Hour),
-		},
-	}
-
-	stats = Stats{
-		TotalTasks:  1247,
-		Running:     156,
-		Failed:      23,
-		SuccessRate: 98.2,
-	}
-}
-
-// 处理任务列表请求
+// 处理任务列表请求 (目前仅返回Mock数据，后续需对接Redis/SQLite)
 func handleTasks(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	setJSONHeaders(w)
 
 	if r.Method == http.MethodGet {
+		// 从 Redis 获取真实任务列表
+		tasks, err := taskQueue.GetTasks()
+		if err != nil {
+			log.Printf("获取任务列表失败: %v", err)
+			// 出错时返回空列表
+			tasks = []*scheduler.Task{}
+		}
+
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
 			"data":    tasks,
@@ -168,24 +99,45 @@ func handleTasks(w http.ResponseWriter, r *http.Request) {
 
 // 处理创建任务请求
 func handleCreateTask(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	setJSONHeaders(w)
 
 	if r.Method == http.MethodPost {
-		var newTask Task
-		if err := json.NewDecoder(r.Body).Decode(&newTask); err != nil {
+		var req struct {
+			Name           string `json:"name"`
+			Type           string `json:"type"`
+			URL            string `json:"url"`
+			Priority       int    `json:"priority"`
+			Timeout        int    `json:"timeout"`
+			Schedule       string `json:"schedule"`
+			CronExpression string `json:"cronExpression"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		// 设置默认值
-		newTask.ID = fmt.Sprintf("task-%d", time.Now().Unix())
-		newTask.Status = "pending"
-		newTask.CreatedAt = time.Now()
-		newTask.LastExecution = time.Now()
-		newTask.SuccessRate = 100.0
+		// 构建任务对象
+		newTask := &scheduler.Task{
+			ID:        fmt.Sprintf("task-%d", time.Now().UnixNano()),
+			Name:      req.Name,
+			Type:      scheduler.TaskType(req.Type),
+			Status:    scheduler.StatusPending,
+			Priority:  req.Priority,
+			Schedule:  req.Schedule,
+			CronExpr:  req.CronExpression,
+			Target:    req.URL,
+			Timeout:   req.Timeout,
+			CreatedAt: time.Now(),
+		}
 
-		tasks = append([]Task{newTask}, tasks...)
+		// 提交到 Redis 队列
+		if err := taskQueue.PushTask(newTask); err != nil {
+			http.Error(w, fmt.Sprintf("提交任务失败: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		log.Printf("收到新任务: %s (%s)", newTask.Name, newTask.ID)
 
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
@@ -199,8 +151,15 @@ func handleCreateTask(w http.ResponseWriter, r *http.Request) {
 
 // 处理统计信息请求
 func handleStats(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	setJSONHeaders(w)
+
+	// TODO: 从 Redis 获取真实统计信息
+	stats := map[string]interface{}{
+		"totalTasks":  0,
+		"running":     0,
+		"failed":      0,
+		"successRate": 0,
+	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
@@ -210,12 +169,198 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 
 // 健康检查
 func handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	setJSONHeaders(w)
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":  "healthy",
 		"time":    time.Now().Format(time.RFC3339),
-		"version": "v0.0.15",
+		"version": "v0.0.26",
+		"worker":  "running",
+	})
+}
+
+// ===== IP 管理 API =====
+
+func handleLocalIPs(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		setCORSHeaders(w, "GET,POST,OPTIONS")
+		return
+	}
+	setCORSHeaders(w, "GET,POST")
+	setJSONHeaders(w)
+
+	switch r.Method {
+	case http.MethodGet:
+		writeSuccess(w, ipManager.ListLocalIPs())
+	case http.MethodPost:
+		var req struct {
+			Address string `json:"address"`
+			Source  string `json:"source"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("解析请求失败: %v", err))
+			return
+		}
+		if strings.TrimSpace(req.Address) == "" {
+			writeError(w, http.StatusBadRequest, "address 不能为空")
+			return
+		}
+		entry := ipManager.AddLocalIP(strings.TrimSpace(req.Address), strings.TrimSpace(req.Source))
+		writeSuccess(w, entry)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func handleLocalIPDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		setCORSHeaders(w, "DELETE,OPTIONS")
+		return
+	}
+	setCORSHeaders(w, "DELETE")
+	setJSONHeaders(w)
+
+	id := strings.TrimPrefix(r.URL.Path, "/api/ip/local/")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "缺少 IP ID")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodDelete:
+		if ipManager.DeleteLocalIP(id) {
+			writeSuccess(w, map[string]bool{"deleted": true})
+			return
+		}
+		writeError(w, http.StatusNotFound, "未找到对应的IP")
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func handleWhitelist(w http.ResponseWriter, r *http.Request) {
+	ctrl := hotConnPool.AccessController()
+	handleAccessList(w, r, ctrl.GetAllowedIPs, ctrl.AddToWhitelist, ctrl.RemoveFromWhitelist, true)
+}
+
+func handleBlacklist(w http.ResponseWriter, r *http.Request) {
+	ctrl := hotConnPool.AccessController()
+	add := func(ip string) { ctrl.AddIP(ip, false) }
+	remove := func(ip string) { ctrl.RemoveFromBlacklist(ip) }
+	// reuse handler but convert add signature
+	handleAccessList(w, r, ctrl.GetBlockedIPs, add, remove, false)
+}
+
+func handleAccessList(
+	w http.ResponseWriter,
+	r *http.Request,
+	getList func() []string,
+	addFunc func(string),
+	removeFunc func(string),
+	isWhite bool,
+) {
+	if r.Method == http.MethodOptions {
+		setCORSHeaders(w, "GET,POST,DELETE,OPTIONS")
+		return
+	}
+	setCORSHeaders(w, "GET,POST,DELETE")
+	setJSONHeaders(w)
+
+	switch r.Method {
+	case http.MethodGet:
+		writeSuccess(w, getList())
+	case http.MethodPost:
+		var req struct {
+			IP string `json:"ip"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("解析请求失败: %v", err))
+			return
+		}
+		ip := strings.TrimSpace(req.IP)
+		if ip == "" {
+			writeError(w, http.StatusBadRequest, "ip 不能为空")
+			return
+		}
+		addFunc(ip)
+		writeSuccess(w, map[string]string{"ip": ip})
+	case http.MethodDelete:
+		ip := r.URL.Query().Get("ip")
+		ip = strings.TrimSpace(ip)
+		if ip == "" {
+			writeError(w, http.StatusBadRequest, "请通过 ?ip= 指定要删除的 IP")
+			return
+		}
+		removeFunc(ip)
+		writeSuccess(w, map[string]string{"ip": ip, "removed": "true"})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func handleIPSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		setCORSHeaders(w, "GET,PUT,OPTIONS")
+		return
+	}
+	setCORSHeaders(w, "GET,PUT")
+	setJSONHeaders(w)
+
+	switch r.Method {
+	case http.MethodGet:
+		writeSuccess(w, ipManager.Settings())
+	case http.MethodPut:
+		var req IPSettings
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("解析请求失败: %v", err))
+			return
+		}
+		ipManager.UpdateSettings(req)
+		writeSuccess(w, req)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func handlePoolStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		setCORSHeaders(w, "GET,OPTIONS")
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	setCORSHeaders(w, "GET")
+	setJSONHeaders(w)
+
+	stats := hotConnPool.GetStats()
+	writeSuccess(w, stats)
+}
+
+// ===== 辅助函数 =====
+
+func setCORSHeaders(w http.ResponseWriter, methods string) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", methods)
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+}
+
+func setJSONHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+}
+
+func writeSuccess(w http.ResponseWriter, data interface{}) {
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"data":    data,
+	})
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": false,
+		"message": msg,
 	})
 }

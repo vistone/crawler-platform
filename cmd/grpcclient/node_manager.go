@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"crawler-platform/cmd/grpcserver/tasksmanager"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -35,10 +37,18 @@ type NodeManager struct {
 
 	// 节点 ID
 	nodeID string
+
+	// TLS 配置（用于连接到服务器节点）
+	tlsConfig *tls.Config
 }
 
-// NewNodeManager 创建新的节点管理器
+// NewNodeManager 创建新的节点管理器（保持向后兼容）
 func NewNodeManager(mainClient tasksmanager.TasksManagerClient, mainConn *grpc.ClientConn, nodeID string) *NodeManager {
+	return NewNodeManagerWithTLS(mainClient, mainConn, nodeID, nil)
+}
+
+// NewNodeManagerWithTLS 创建新的节点管理器（带 TLS 配置）
+func NewNodeManagerWithTLS(mainClient tasksmanager.TasksManagerClient, mainConn *grpc.ClientConn, nodeID string, tlsConfig *tls.Config) *NodeManager {
 	return &NodeManager{
 		mainClient:      mainClient,
 		mainConn:        mainConn,
@@ -46,6 +56,7 @@ func NewNodeManager(mainClient tasksmanager.TasksManagerClient, mainConn *grpc.C
 		nodeConnections: make(map[string]*grpc.ClientConn),
 		knownNodes:      make(map[string]*tasksmanager.GrpcServerNodeInfo),
 		nodeID:          nodeID,
+		tlsConfig:       tlsConfig,
 	}
 }
 
@@ -93,9 +104,17 @@ func (nm *NodeManager) ConnectToNode(nodeInfo *tasksmanager.GrpcServerNodeInfo) 
 
 	log.Printf("🔗 正在自动连接到服务器节点: %s (%s)", nodeInfo.NodeUuid, nodeAddr)
 
+	// 选择传输凭证
+	var transportCreds credentials.TransportCredentials
+	if nm.tlsConfig != nil {
+		transportCreds = credentials.NewTLS(nm.tlsConfig)
+	} else {
+		transportCreds = insecure.NewCredentials()
+	}
+
 	// 建立 gRPC 连接（带超时）
 	conn, err := grpc.NewClient(nodeAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(transportCreds),
 		grpc.WithTimeout(5*time.Second))
 
 	if err != nil {

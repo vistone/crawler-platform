@@ -1,6 +1,7 @@
 package utlsclient
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"time"
@@ -31,7 +32,13 @@ func (hc *HealthChecker) CheckConnection(conn *UTLSConnection) bool {
 	isHealthy := conn.healthy
 	lastUsed := conn.lastUsed
 	errorCount := conn.errorCount
+	inUse := conn.inUse
 	conn.mu.Unlock()
+
+	// 如果连接正在使用中，跳过健康检查（避免干扰正在进行的请求）
+	if inUse {
+		return isHealthy
+	}
 
 	// 如果错误次数过多，标记为不健康（错误次数超过10次）
 	const maxErrorCount = 10
@@ -46,6 +53,14 @@ func (hc *HealthChecker) CheckConnection(conn *UTLSConnection) bool {
 	// 如果连接空闲时间过长，进行健康检查
 	if time.Since(lastUsed) > hc.config.HealthCheckInterval {
 		if isHealthy {
+			// 再次检查连接是否正在使用（双重检查，避免竞态条件）
+			conn.mu.Lock()
+			if conn.inUse {
+				conn.mu.Unlock()
+				return isHealthy // 如果正在使用，跳过健康检查
+			}
+			conn.mu.Unlock()
+
 			// 执行简单的健康检查
 			if err := hc.performHealthCheck(conn); err != nil {
 				Debug("健康检查失败: %s -> %v", conn.targetIP, err)
@@ -62,7 +77,35 @@ func (hc *HealthChecker) CheckConnection(conn *UTLSConnection) bool {
 
 // performHealthCheck 执行实际的健康检查
 func (hc *HealthChecker) performHealthCheck(conn *UTLSConnection) error {
-	// 创建简单的HEAD请求进行健康检查
+	// 检测协商的协议
+	conn.mu.Lock()
+	negotiatedProto := conn.tlsConn.ConnectionState().NegotiatedProtocol
+	conn.mu.Unlock()
+
+	// 对于 HTTP/2 连接，只检查连接状态，不发送请求（避免关闭连接）
+	if negotiatedProto == "h2" {
+		conn.mu.Lock()
+		defer conn.mu.Unlock()
+
+		// 检查连接是否健康
+		if !conn.healthy {
+			return fmt.Errorf("连接不健康")
+		}
+
+		// 检查是否超时
+		if time.Since(conn.created) > hc.config.MaxLifetime {
+			conn.healthy = false
+			return fmt.Errorf("连接已超时")
+		}
+
+		// 更新最后检查时间
+		conn.lastChecked = time.Now()
+		conn.lastUsed = time.Now()
+		Debug("HTTP/2 连接健康检查通过: %s", conn.targetIP)
+		return nil
+	}
+
+	// 对于 HTTP/1.1 连接，发送简单的 HEAD 请求
 	req := &http.Request{
 		Method: "HEAD",
 		URL:    &url.URL{Scheme: HTTPSProtocol, Host: conn.targetHost, Path: "/"},

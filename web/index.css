@@ -213,6 +213,23 @@ body {
     color: rgba(255, 255, 255, 0.6);
 }
 
+.logout-btn {
+    margin-left: auto;
+    padding: 4px 0;
+    border: none;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.75);
+    cursor: pointer;
+    transition: color var(--transition-fast);
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.logout-btn:hover {
+    color: #ffffff;
+    text-decoration: underline;
+}
+
 /* ===== 主内容区域 ===== */
 .main-content {
     margin-left: var(--sidebar-width);
@@ -474,6 +491,28 @@ body {
     gap: var(--spacing-lg);
 }
 
+.monitor-grid .card {
+    grid-column: span 6;
+}
+
+.pool-stats {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-md);
+}
+
+.pool-stat-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.pool-stat-row strong {
+    color: var(--text-primary);
+}
+
 .chart-card {
     grid-column: span 8;
 }
@@ -596,11 +635,115 @@ body {
     color: var(--text-secondary);
 }
 
+.task-meta-sub {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin-top: 4px;
+    word-break: break-all;
+}
+
+.tab-nav {
+    display: inline-flex;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm);
+    background: var(--gray-100);
+    border-radius: var(--border-radius-sm);
+    margin-bottom: var(--spacing-lg);
+}
+
+.tab-button {
+    border: none;
+    background: transparent;
+    padding: 8px 16px;
+    border-radius: var(--border-radius-sm);
+    font-weight: 500;
+    cursor: pointer;
+    color: var(--text-secondary);
+    transition: all var(--transition-fast);
+}
+
+.tab-button.active {
+    background: var(--bg-primary);
+    color: var(--primary-color);
+    box-shadow: var(--shadow-sm);
+}
+
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+.inline-form {
+    display: flex;
+    gap: var(--spacing-sm);
+    margin-bottom: var(--spacing-md);
+}
+
+.inline-form .form-input {
+    flex: 1;
+}
+
+.tag-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-sm);
+    min-height: 48px;
+}
+
+.ip-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--gray-100);
+    border-radius: 999px;
+    padding: 6px 12px;
+    font-size: 13px;
+}
+
+.ip-tag button {
+    border: none;
+    background: transparent;
+    color: var(--danger-color);
+    cursor: pointer;
+}
+
+.form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--spacing-md);
+}
+
+.form-actions {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.placeholder-cell {
+    text-align: center;
+    color: var(--text-secondary);
+    padding: 24px;
+}
+
 .task-type {
     padding: 2px 8px;
     background: var(--gray-200);
     border-radius: 4px;
     font-weight: 500;
+}
+
+.badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--gray-200);
+    font-size: 12px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
 }
 
 .task-status {
@@ -714,6 +857,15 @@ body {
 
 .btn-secondary:hover {
     background: var(--gray-300);
+}
+
+.btn-danger {
+    background: var(--danger-color);
+    color: white;
+}
+
+.btn-danger:hover {
+    background: #dc2626;
 }
 
 /* ===== 过滤器组 ===== */
@@ -914,7 +1066,8 @@ body {
     }
     
     .dashboard-grid > .card:nth-child(2),
-    .dashboard-grid > .card:nth-child(4) {
+    .dashboard-grid > .card:nth-child(4),
+    .monitor-grid .card {
         grid-column: span 6;
     }
 }
@@ -948,7 +1101,8 @@ body {
         grid-template-columns: 1fr;
     }
     
-    .dashboard-grid > .card {
+    .dashboard-grid > .card,
+    .monitor-grid .card {
         grid-column: span 12 !important;
     }
     

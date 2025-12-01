@@ -92,6 +92,12 @@ func (c *UTLSClient) DoWithContext(ctx context.Context, req *http.Request) (*htt
 	if req.Header.Get("Accept-Language") == "" && c.conn.acceptLanguage != "" {
 		req.Header.Set("Accept-Language", c.conn.acceptLanguage)
 	}
+	// 设置 Cookie（如果连接有 sessionID 且请求中没有设置 Cookie）
+	if req.Header.Get("Cookie") == "" {
+		if sessionID := c.conn.GetSessionID(); sessionID != "" {
+			req.Header.Set("Cookie", fmt.Sprintf("SessionId=%s;State=1", sessionID))
+		}
+	}
 	// Host 优先由调用方设定；若为空则从热连接参数传递（仅参数注入，不做连接管理）
 	if req.Host == "" {
 		if h := c.conn.TargetHost(); h != "" {

@@ -150,6 +150,7 @@ type UTLSConnection struct {
 	// 指纹信息
 	fingerprint    Profile // 使用的TLS指纹
 	acceptLanguage string  // 随机生成的Accept-Language头
+	sessionID      string  // Session ID（用于 Cookie 头，如 Google Earth 的 sessionid）
 
 	// HTTP/2 支持
 	h2ClientConn *http2.ClientConn // HTTP/2客户端连接
@@ -388,34 +389,62 @@ func (p *UTLSHotConnPool) GetConnectionToIP(fullURL, targetIP string) (*UTLSConn
 	return conn, nil
 }
 
-// getExistingConnection 获取现有连接
+// getExistingConnection 获取现有连接（随机选择，实现负载均衡）
 func (p *UTLSHotConnPool) getExistingConnection(targetHost string) *UTLSConnection {
 	// 使用ConnectionManager获取该域名的所有连接
 	connections := p.connManager.GetConnectionsForHost(targetHost)
 
-	// 随机选择一个健康的连接
+	if len(connections) == 0 {
+		return nil
+	}
+
+	// 首先收集所有健康的可用连接
+	var availableConnections []*UTLSConnection
 	for _, conn := range connections {
 		conn.mu.Lock()
-		// 先检查基本条件
 		if conn.inUse || !conn.healthy {
 			conn.mu.Unlock()
 			continue
 		}
-
-		// 解锁后再进行健康检查（避免死锁）
 		conn.mu.Unlock()
 
-		// 健康检查
+		// 快速健康检查（不进行完整检查，避免延迟）
+		// 只检查基本状态，不进行网络验证
 		if !p.healthChecker.CheckConnection(conn) {
 			continue
 		}
 
-		// 再次加锁并标记为使用中
+		availableConnections = append(availableConnections, conn)
+	}
+
+	if len(availableConnections) == 0 {
+		return nil
+	}
+
+	// 实现负载均衡：优先选择使用次数最少的连接（确保使用不同的 IP）
+	// 这样可以确保请求分散到不同的 IP 地址上
+	var selectedConn *UTLSConnection
+	var minRequestCount int64 = -1
+	
+	for _, conn := range availableConnections {
+		requestCount := atomic.LoadInt64(&conn.requestCount)
+		
+		// 如果这是第一个连接，或者使用次数更少，则选择它
+		if minRequestCount == -1 || requestCount < minRequestCount {
+			minRequestCount = requestCount
+			selectedConn = conn
+		}
+	}
+	
+	// 如果找到了使用次数最少的连接，使用它
+	if selectedConn != nil {
+		conn := selectedConn
+		// 再次加锁并标记为使用中（双重检查）
 		conn.mu.Lock()
-		// 双重检查：可能在解锁期间被其他goroutine获取
 		if conn.inUse || !conn.healthy {
 			conn.mu.Unlock()
-			continue
+			// 连接已被使用，返回 nil 让调用者创建新连接
+			return nil
 		}
 
 		// 标记为使用中
@@ -423,7 +452,8 @@ func (p *UTLSHotConnPool) getExistingConnection(targetHost string) *UTLSConnecti
 		conn.lastUsed = time.Now()
 		atomic.AddInt64(&conn.requestCount, 1)
 		conn.mu.Unlock()
-		projlogger.Debug("复用现有连接: %s -> %s", targetHost, conn.targetIP)
+		
+		projlogger.Debug("复用现有连接: %s -> %s (请求次数: %d)", targetHost, conn.targetIP, minRequestCount+1)
 		return conn
 	}
 
@@ -497,9 +527,9 @@ func (p *UTLSHotConnPool) createNewHotConnectionWithPath(targetHost, path string
 			continue
 		}
 
-		// 2. 检查IP是否允许访问
+		// 2. 检查IP是否允许访问（只有白名单中的IP才能使用）
 		if !p.validateIPAccess(ip) {
-			// IP在黑名单中，跳过并尝试下一次获取
+			// IP不在白名单中，跳过并尝试下一次获取
 			lastErr = fmt.Errorf("IP被拒绝: %s", ip)
 			continue
 		}
@@ -1032,6 +1062,20 @@ func (conn *UTLSConnection) Fingerprint() Profile {
 // AcceptLanguage 返回连接的Accept-Language头部值
 func (conn *UTLSConnection) AcceptLanguage() string {
 	return conn.acceptLanguage
+}
+
+// SetSessionID 设置连接的 Session ID（用于 Cookie 头）
+func (conn *UTLSConnection) SetSessionID(sessionID string) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	conn.sessionID = sessionID
+}
+
+// GetSessionID 获取连接的 Session ID
+func (conn *UTLSConnection) GetSessionID() string {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.sessionID
 }
 
 // Created 返回连接创建时间

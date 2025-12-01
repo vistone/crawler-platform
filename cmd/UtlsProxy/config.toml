@@ -1,0 +1,43 @@
+# UTLSHotConnPool 连接池配置
+[utlsProxyServer]
+port = 7456
+
+[HotConnPool]
+# 最大连接数（增加到500以支持高并发）
+max_connections = 500
+# 每个主机最大连接数（增加到50以支持高并发）
+max_conns_per_host = 50
+# 最大空闲连接数
+max_idle_conns = 20
+# 连接超时时间 (秒)
+conn_timeout = 30
+# 空闲超时时间 (秒)
+idle_timeout = 60
+# 连接最大生命周期 (秒)
+max_lifetime = 300
+# 测试请求超时时间 (秒)
+test_timeout = 10
+# 健康检查间隔 (秒)
+health_check_interval = 30
+# 清理间隔 (秒)
+cleanup_interval = 60
+# 黑名单检查间隔 (秒)
+blacklist_check_interval = 300
+# DNS更新间隔 (秒)
+dns_update_interval = 1800
+# 最大重试次数
+max_retries = 3
+
+[tuic]
+enable = true
+
+[[tuic.nodes]]
+name = "tuic-node-1"
+listen = "0.0.0.0:7457"
+certificate = "/home/stone/crawler-platform/certs/wildcard_cert.pem"
+private_key = "/home/stone/crawler-platform/certs/wildcard_key.pem"
+uuid = "7c0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a"
+password = "7c0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a"
+congestion_control = "bbr"
+zero_rtt_handshake = true
+disabled = false

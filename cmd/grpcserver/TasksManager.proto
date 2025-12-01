@@ -6,7 +6,7 @@ syntax = "proto3";
 package tasksmanager;
 
 // Go 语言包选项，指定生成的 Go 代码包名
-option go_package = ".;tasksmanager";
+option go_package = "./tasksmanager";
 
 // TaskType 任务类型枚举
 // 用于表示任务的类型
@@ -228,23 +228,37 @@ message SyncNodeListResponse {
 
 // TaskRequest 任务请求消息
 // 用于提交新的任务请求，包含任务执行所需的所有信息
+// 相比最初的设计，这里将原来的 URI 拆分为瓦片键和时间版本等字段
 message TaskRequest {
   string task_client_id = 1;    // 任务客户端标识符，指定执行任务的客户端
-  TaskType task_type = 2;                     // 任务类型
-  string task_uri = 3;          // 任务目标 URI，即要请求的 HTTP URL
-  optional bytes task_body = 4;          // 任务请求体，HTTP 请求的 body 内容（如 POST 请求的数据）
-  optional TaskMethod task_method = 5;   // HTTP 请求方法（GET、POST、PUT、DELETE 等）
-  optional TaskStatus task_status = 6;   // 任务初始状态（通常为 PENDING）
+  TaskType task_type    = 2;    // 任务类型
+
+  // 针对 Google Earth / RockTree 等任务的关键定位字段
+  string TileKey        = 3;    // 瓦片键（如 QK 编码）
+  int32  epoch          = 4;    // 主版本号（Epoch）
+  optional int32 imageryEpoch = 5; // 影像版本号（可选）
+
+  // 通用 HTTP 相关字段
+  optional bytes task_body   = 6; // 任务请求体，HTTP 请求的 body 内容（如 POST 请求的数据）
+  optional TaskMethod task_method = 7; // HTTP 请求方法（GET、POST、PUT、DELETE 等）
+  optional TaskStatus task_status = 8; // 任务初始状态（通常为 PENDING）
 }
 
 // TaskResponse 任务响应消息
 // 任务执行完成后返回的响应结果
+// 保持与 TaskRequest 对应的瓦片键和版本信息，便于结果归属
 message TaskResponse {
-  string task_client_id = 1;                  // 任务客户端标识符，与请求中的对应
-  TaskType task_type = 2;                     // 任务类型
-  string task_uri = 3;                        // 任务目标 URI，与请求中的对应
-  optional bytes task_response_body = 4;      // HTTP 响应体内容（可选，任务失败时可能为空）
-  optional int32 task_response_status_code = 5; // HTTP 响应状态码（可选，如 200、404、500 等）
+  string task_client_id = 1;    // 任务客户端标识符，与请求中的对应
+  TaskType task_type    = 2;    // 任务类型
+
+  // 与请求对应的关键定位字段
+  string TileKey        = 3;    // 瓦片键
+  int32  Epoch          = 4;    // 主版本号（Epoch）
+  optional int32 imageryEpoch = 5; // 影像版本号（可选）
+
+  // HTTP 结果
+  optional bytes task_response_body = 6;        // HTTP 响应体内容（可选，任务失败时可能为空）
+  optional int32 task_response_status_code = 7; // HTTP 响应状态码（可选，如 200、404、500 等）
 }
 
 // TasksManager 任务管理器 gRPC 服务
