@@ -44,6 +44,8 @@ type UTLSConnection struct {
 
 	// on403 回调函数，当检测到403错误时调用，用于将IP加入黑名单
 	on403 func(ip string)
+	// onQuickHealthCheck 回调函数，当检测到连接不活跃时调用，用于触发快速健康检查
+	onQuickHealthCheck func(conn *UTLSConnection)
 
 	mu sync.Mutex
 }
@@ -188,6 +190,27 @@ func (c *UTLSConnection) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Header.Get("Connection") == "" {
 		req.Header.Set("Connection", "keep-alive")
 	}
+	if req.Header.Get("Origin") == "" {
+		req.Header.Set("Origin", "https://"+targetHost)
+	}
+	if req.Header.Get("Referer") == "" {
+		req.Header.Set("Referer", "https://"+targetHost+"/")
+	}
+	if req.Header.Get("Sec-Fetch-Dest") == "" {
+		req.Header.Set("Sec-Fetch-Dest", "empty")
+	}
+	if req.Header.Get("Sec-Fetch-Mode") == "" {
+		req.Header.Set("Sec-Fetch-Mode", "cors")
+	}
+	if req.Header.Get("Sec-Fetch-Site") == "" {
+		req.Header.Set("Sec-Fetch-Site", "same-site")
+	}
+	if req.Header.Get("Sec-Purpose") == "" {
+		req.Header.Set("Sec-Purpose", "prefetch")
+	}
+	if req.Header.Get("Priority") == "" {
+		req.Header.Set("Priority", "u=6")
+	}
 	// 对于有请求体的请求，如果没有设置 Content-Type，则设置默认值
 	// 注意：只有当请求体不为空时才设置，避免 GET 请求被错误设置
 	if req.Body != nil && req.Header.Get("Content-Type") == "" {
@@ -258,8 +281,20 @@ func (c *UTLSConnection) roundTripH2(req *http.Request) (*http.Response, error) 
 		clientConn, err := t.NewClientConn(c.tlsConn)
 		if err != nil {
 			c.h2Mu.Unlock()
-			// 创建 HTTP/2 连接失败，不标记为不健康（只有403才标记为不健康）
-			// 连接关闭是正常的，返回错误让上层重试，重试时会获取新的连接
+			// 创建 HTTP/2 连接失败，检查是否是连接已关闭的错误
+			errStr := err.Error()
+			if strings.Contains(errStr, "use of closed network connection") ||
+				strings.Contains(errStr, "connection closed") ||
+				strings.Contains(errStr, "broken pipe") ||
+				strings.Contains(errStr, "EOF") {
+				// 底层连接已关闭，触发快速健康检查恢复连接（不标记为不健康）
+				// 连接保持健康状态，只有403才标记为不健康
+				projlogger.Debug("检测到底层连接已关闭，触发快速恢复连接 %s（连接保持健康状态）", c.targetIP)
+				// 触发快速健康检查（异步，不阻塞当前请求）
+				if c.onQuickHealthCheck != nil {
+					go c.onQuickHealthCheck(c)
+				}
+			}
 			return nil, fmt.Errorf("创建 HTTP/2 连接失败: %w", err)
 		}
 		c.h2ClientConn = clientConn
@@ -271,13 +306,28 @@ func (c *UTLSConnection) roundTripH2(req *http.Request) (*http.Response, error) 
 	resp, err := h2Conn.RoundTrip(req)
 	if err != nil {
 		// 请求失败，关闭 HTTP/2 连接，避免 readLoop goroutine 泄漏
-		// 但不标记为不健康，下次使用时会自动重建连接（只有403才标记为不健康）
 		c.h2Mu.Lock()
 		if c.h2ClientConn == h2Conn {
 			c.h2ClientConn.Close()
 			c.h2ClientConn = nil
 		}
 		c.h2Mu.Unlock()
+
+		// 检查是否是连接关闭的错误，如果是则触发快速恢复
+		errStr := err.Error()
+		if strings.Contains(errStr, "use of closed network connection") ||
+			strings.Contains(errStr, "connection closed") ||
+			strings.Contains(errStr, "broken pipe") ||
+			strings.Contains(errStr, "EOF") {
+			// 底层连接已关闭，触发快速健康检查恢复连接（不标记为不健康）
+			// 连接保持健康状态，只有403才标记为不健康
+			projlogger.Debug("HTTP/2 请求失败，检测到底层连接已关闭，触发快速恢复连接 %s（连接保持健康状态）", c.targetIP)
+			// 触发快速健康检查（异步，不阻塞当前请求）
+			if c.onQuickHealthCheck != nil {
+				go c.onQuickHealthCheck(c)
+			}
+		}
+		// 注意：只有403才标记为不健康，其他错误（包括连接关闭）不标记
 		return nil, err
 	}
 
@@ -332,8 +382,10 @@ func establishConnection(ip, domain string, config *PoolConfig, on403 func(strin
 	//projlogger.Debug("开始建立连接: %s -> %s (地址: %s)", domain, ip, address)
 
 	// 创建 Dialer，支持绑定本地 IP 地址
+	// 设置 TCP keep-alive 以保持长连接
 	dialer := &net.Dialer{
-		Timeout: config.ConnTimeout,
+		Timeout:   config.ConnTimeout,
+		KeepAlive: 30 * time.Second, // 每30秒发送一次keep-alive探测包
 	}
 
 	// 记录使用的本地 IP 地址（用于日志）
@@ -399,6 +451,14 @@ func establishConnection(ip, domain string, config *PoolConfig, on403 func(strin
 		return nil, fmt.Errorf("TCP连接失败: %w", err)
 	}
 	//projlogger.Debug("TCP连接成功: %s", address)
+
+	// 设置TCP keep-alive以保持长连接
+	// 这样可以防止连接在空闲时被服务器或中间设备（如NAT、防火墙）关闭
+	if tcpConn, ok := tcpConn.(*net.TCPConn); ok {
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(30 * time.Second) // 每30秒发送一次keep-alive探测包
+		// 注意：SetKeepAlivePeriod 在某些系统上可能不支持，如果失败也不影响连接建立
+	}
 
 	// 使用defer和标志位确保在任何后续错误发生时都关闭TCP连接
 	success := false

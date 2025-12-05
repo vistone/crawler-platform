@@ -8,10 +8,11 @@ import (
 // ConnectionManager 连接管理器，负责连接的生命周期管理。
 // 它扮演着“白名单”的角色，只存储健康、可用的连接。
 type ConnectionManager struct {
-	mu          sync.RWMutex
-	connections map[string]*UTLSConnection // IP -> Connection
-	hostMapping map[string][]string        // Host -> []IP
-	config      *PoolConfig
+	mu                    sync.RWMutex
+	connections           map[string]*UTLSConnection // IP -> Connection
+	hostMapping           map[string][]string         // Host -> []IP
+	config                *PoolConfig
+	quickHealthCheckCallback func(*UTLSConnection)   // 快速健康检查回调
 }
 
 // NewConnectionManager 创建新的连接管理器。
@@ -48,6 +49,29 @@ func (cm *ConnectionManager) AddConnection(conn *UTLSConnection) {
 
 	cm.connections[conn.targetIP] = conn
 	cm.hostMapping[conn.targetHost] = append(cm.hostMapping[conn.targetHost], conn.targetIP)
+	
+	// 如果已经设置了快速健康检查回调，为新添加的连接也设置
+	if cm.quickHealthCheckCallback != nil {
+		conn.mu.Lock()
+		conn.onQuickHealthCheck = cm.quickHealthCheckCallback
+		conn.mu.Unlock()
+	}
+}
+
+// SetQuickHealthCheckCallback 为所有连接设置快速健康检查回调
+func (cm *ConnectionManager) SetQuickHealthCheckCallback(callback func(*UTLSConnection)) {
+	cm.mu.Lock()
+	cm.quickHealthCheckCallback = callback
+	cm.mu.Unlock()
+	
+	// 为所有现有连接设置回调
+	cm.mu.RLock()
+	for _, conn := range cm.connections {
+		conn.mu.Lock()
+		conn.onQuickHealthCheck = callback
+		conn.mu.Unlock()
+	}
+	cm.mu.RUnlock()
 }
 
 // RemoveConnection 从管理器中移除一个连接，并关闭它。
@@ -130,6 +154,30 @@ func (cm *ConnectionManager) GetAllConnections() []*UTLSConnection {
 	conns := make([]*UTLSConnection, 0, len(cm.connections))
 	for _, conn := range cm.connections {
 		conns = append(conns, conn)
+	}
+	return conns
+}
+
+// GetAllConnectionsForHost 获取指定域名的所有连接（包括不健康的）。
+func (cm *ConnectionManager) GetAllConnectionsForHost(host string) []*UTLSConnection {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	ipList, exists := cm.hostMapping[host]
+	if !exists {
+		return nil
+	}
+
+	// 创建一个IP列表的副本进行遍历
+	ipListCopy := make([]string, len(ipList))
+	copy(ipListCopy, ipList)
+
+	var conns []*UTLSConnection
+	for _, ip := range ipListCopy {
+		if conn, connExists := cm.connections[ip]; connExists {
+			// 返回所有连接，包括不健康的
+			conns = append(conns, conn)
+		}
 	}
 	return conns
 }

@@ -66,6 +66,10 @@ func (c *Client) Start() {
 	c.poolManager.Start()
 	c.wg.Add(1)
 	go c.maintenanceLoop()
+
+	// 为所有现有连接设置快速健康检查回调
+	c.connManager.SetQuickHealthCheckCallback(c.quickHealthCheck)
+
 	projlogger.Info("UTLS 客户端已启动")
 }
 
@@ -90,7 +94,57 @@ func (c *Client) Stop() {
 func (c *Client) GetConnectionForHost(host string) (*UTLSConnection, error) {
 	connections := c.connManager.GetConnectionsForHost(host)
 	if len(connections) == 0 {
-		return nil, fmt.Errorf("没有到主机 %s 的可用连接，请等待PoolManager预热", host)
+		// 如果没有健康连接，尝试获取所有连接（包括不健康的），并尝试激活它们
+		allConns := c.connManager.GetAllConnectionsForHost(host)
+		if len(allConns) == 0 {
+			return nil, fmt.Errorf("没有到主机 %s 的可用连接，请等待PoolManager预热", host)
+		}
+
+		// 所有连接都不健康，尝试快速激活不健康的连接
+		projlogger.Debug("主机 %s 的所有连接都不健康，尝试快速激活连接...", host)
+		activatedCount := 0
+		maxActivate := 5 // 最多同时激活5个连接
+		for _, conn := range allConns {
+			conn.mu.Lock()
+			inUse := conn.inUse
+			wasHealthy := conn.healthy
+			conn.mu.Unlock()
+
+			if !inUse && !wasHealthy && activatedCount < maxActivate {
+				// 触发快速健康检查，尝试激活这个连接
+				if conn.onQuickHealthCheck != nil {
+					// 异步触发快速健康检查
+					go conn.onQuickHealthCheck(conn)
+					activatedCount++
+				}
+			}
+		}
+
+		if activatedCount > 0 {
+			// 等待更长时间，让快速健康检查有机会完成
+			// 使用指数退避：第一次等待200ms，如果还没恢复，再等待
+			waitTime := 200 * time.Millisecond
+			for retry := 0; retry < 3; retry++ {
+				time.Sleep(waitTime)
+				// 再次尝试获取健康连接
+				connections := c.connManager.GetConnectionsForHost(host)
+				if len(connections) > 0 {
+					// 有连接恢复了，尝试获取
+					for _, conn := range connections {
+						if conn.TryAcquire() {
+							projlogger.Debug("快速激活成功，获取到连接 %s (等待了 %v)", conn.TargetIP(), time.Duration(retry+1)*waitTime)
+							return conn, nil
+						}
+					}
+				}
+				// 如果还没恢复，增加等待时间
+				waitTime *= 2
+			}
+		}
+
+		// 如果所有连接都不健康且无法激活，返回错误
+		// 但这种情况应该很少发生，因为连接应该能够恢复
+		return nil, fmt.Errorf("没有到主机 %s 的可用连接，所有连接都不健康，正在尝试激活，请稍后重试", host)
 	}
 
 	// 为了让同一主机的多个预热连接都能参与请求，这里从随机位置开始尝试获取连接。
@@ -121,17 +175,26 @@ func (c *Client) ReleaseConnection(conn *UTLSConnection) {
 	targetIP := conn.targetIP
 	inUse := conn.inUse
 
-	// 如果连接不健康，检查是否还在连接池中
+	// 如果连接不健康，触发快速健康检查恢复连接（不立即移除）
+	// 只有403错误才会在健康检查中移除连接
 	if !isHealthy {
 		conn.mu.Unlock()
-		// 检查连接是否还在连接池中（可能已经被健康检查移除了）
+		// 检查连接是否还在连接池中
 		if c.connManager.GetConnection(targetIP) != nil {
-			projlogger.Warn("连接 %s 在使用中发生错误，将被销毁", targetIP)
-			c.connManager.RemoveConnection(targetIP)
+			// 连接不健康，触发快速健康检查恢复（不立即移除）
+			// 只有快速健康检查确认是403时，才会移除连接
+			projlogger.Debug("连接 %s 不健康，触发快速健康检查恢复（连接保持，等待恢复）", targetIP)
+			if conn.onQuickHealthCheck != nil {
+				go conn.onQuickHealthCheck(conn)
+			}
 		} else {
-			// 连接已经被移除，只记录调试日志
+			// 连接已经被移除（可能是健康检查中确认了403），只记录调试日志
 			projlogger.Debug("连接 %s 已被移除（可能在健康检查中被移除）", targetIP)
 		}
+		// 即使连接不健康，也要释放 inUse 标志，允许其他操作
+		conn.mu.Lock()
+		conn.inUse = false
+		conn.mu.Unlock()
 		return
 	}
 
@@ -165,6 +228,9 @@ func (c *Client) maintenanceLoop() {
 		case <-ticker.C:
 			projlogger.Debug("开始对白名单连接进行健康检查...")
 			c.healthCheck()
+
+			// 确保所有连接都有快速健康检查回调（包括新添加的连接）
+			c.connManager.SetQuickHealthCheckCallback(c.quickHealthCheck)
 
 			cleanedBlacklist := c.blacklist.Cleanup()
 			if cleanedBlacklist > 0 {
@@ -254,9 +320,10 @@ func (c *Client) healthCheck() {
 
 			resp, err := conn.RoundTrip(req)
 			if err != nil {
-				// 网络错误：去激活连接（标记为不健康），但不清理，等待恢复
-				projlogger.Debug("健康检查失败(网络错误)，连接 %s 去激活，错误详情: %v（连接保持，等待恢复）", targetIP, err)
-				conn.markAsUnhealthy()
+				// 网络错误：不标记为不健康，只记录日志
+				// 连接断开是正常的（可能是服务器空闲超时），下次使用时会自动恢复
+				// 只有403才标记为不健康
+				projlogger.Debug("健康检查失败(网络错误)，连接 %s 暂时不可用，错误详情: %v（连接保持健康状态，下次使用时会自动恢复）", targetIP, err)
 				return
 			}
 			defer resp.Body.Close()
@@ -280,12 +347,90 @@ func (c *Client) healthCheck() {
 				// 立即移除不健康的连接（只有403才移除）
 				c.connManager.RemoveConnection(targetIP)
 			default:
-				// 其他非 200 状态码：去激活连接（标记为不健康），但不清理，等待恢复
-				projlogger.Debug("健康检查发现状态码 %d（非200），连接 %s 去激活（连接保持，等待恢复）", resp.StatusCode, targetIP)
-				conn.markAsUnhealthy()
+				// 其他非 200 状态码：不标记为不健康，只记录日志
+				// 可能是临时性问题（如404、500等），连接保持健康状态，下次使用时会自动恢复
+				projlogger.Debug("健康检查发现状态码 %d（非200），连接 %s 暂时不可用（连接保持健康状态，下次使用时会自动恢复）", resp.StatusCode, targetIP)
 			}
 		}(conn, wasHealthy)
 	}
 
 	wg.Wait()
+}
+
+// quickHealthCheck 快速健康检查单个连接（用于立即恢复不活跃的连接）
+func (c *Client) quickHealthCheck(conn *UTLSConnection) {
+	// 如果连接正在使用中，跳过检查
+	conn.mu.Lock()
+	inUse := conn.inUse
+	targetIP := conn.targetIP
+	targetHost := conn.targetHost
+	conn.mu.Unlock()
+
+	if inUse {
+		// 连接正在使用中，跳过快速健康检查
+		return
+	}
+
+	// 标记为使用中，避免并发问题
+	conn.mu.Lock()
+	if conn.inUse {
+		conn.mu.Unlock()
+		return // 在检查期间被其他goroutine获取了
+	}
+	conn.inUse = true
+	conn.mu.Unlock()
+
+	// 异步执行快速健康检查
+	go func() {
+		defer func() {
+			conn.mu.Lock()
+			conn.inUse = false
+			conn.mu.Unlock()
+		}()
+
+		// 使用配置的健康检查路径
+		healthCheckPath := c.config.HealthCheckPath
+		if healthCheckPath == "" {
+			healthCheckPath = "/rt/earth/PlanetoidMetadata" // 默认健康检查路径
+		}
+
+		// 使用 GET 方法进行健康检查
+		req, err := http.NewRequest("GET", "https://"+targetHost+healthCheckPath, nil)
+		if err != nil {
+			projlogger.Debug("快速健康检查构建请求失败: %v, 连接 %s", err, targetIP)
+			return
+		}
+
+		resp, err := conn.RoundTrip(req)
+		if err != nil {
+			// 网络错误：不标记为不健康，只记录日志
+			// 连接断开是正常的（可能是服务器空闲超时），下次使用时会自动恢复
+			// 只有403才标记为不健康
+			projlogger.Debug("快速健康检查失败(网络错误)，连接 %s 暂时不可用，错误详情: %v（连接保持健康状态，下次使用时会自动恢复）", targetIP, err)
+			return
+		}
+		defer resp.Body.Close()
+
+		// 只有返回 200 才恢复健康
+		switch resp.StatusCode {
+		case http.StatusOK:
+			// 连接恢复健康（激活）
+			conn.mu.Lock()
+			if !conn.healthy {
+				conn.healthy = true
+				projlogger.Info("✅ 快速健康检查：连接 %s 已激活（恢复健康）", targetIP)
+			}
+			conn.mu.Unlock()
+		case http.StatusForbidden:
+			// 403错误，加入黑名单并移除连接
+			projlogger.Warn("快速健康检查发现403，将IP %s 从白名单降级到黑名单", targetIP)
+			c.blacklist.Add(targetIP)
+			conn.markAsUnhealthy()
+			c.connManager.RemoveConnection(targetIP)
+		default:
+			// 其他状态码：不标记为不健康，只记录日志
+			// 可能是临时性问题（如404、500等），连接保持健康状态，下次使用时会自动恢复
+			projlogger.Debug("快速健康检查发现状态码 %d（非200），连接 %s 暂时不可用（连接保持健康状态，下次使用时会自动恢复）", resp.StatusCode, targetIP)
+		}
+	}()
 }

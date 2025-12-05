@@ -465,21 +465,34 @@ func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *ta
 	}
 
 	// 发送请求（带 5xx 与网络错误重试）
-	const maxHTTPRetries = 3
+	// 增加重试次数，确保连接有时间恢复
+	const maxHTTPRetries = 10
 	var lastErr error
 	var conn *utlsclient.UTLSConnection
 
-	for attempt := 1; attempt <= maxHTTPRetries; attempt++ {
+		for attempt := 1; attempt <= maxHTTPRetries; attempt++ {
 		// 每次重试都获取新连接（如果连接已标记为不健康，会获取新连接）
 		connStart := time.Now()
 		newConn, err := s.utlsClient.GetConnectionForHost(hostName)
 		if err != nil {
 			lastErr = err
+			// 优化等待时间：使用指数退避，但限制最大等待时间
+			// 对于连接恢复，等待时间不要太长，避免请求超时
+			waitTime := time.Duration(attempt) * 200 * time.Millisecond
+			if strings.Contains(err.Error(), "没有可用连接") || strings.Contains(err.Error(), "所有连接都不健康") {
+				// 连接正在恢复，等待稍长时间（但不超过500ms * attempt）
+				waitTime = time.Duration(attempt) * 300 * time.Millisecond
+				if waitTime > 2*time.Second {
+					waitTime = 2 * time.Second // 限制最大等待时间为2秒
+				}
+				s.logger.Debug("连接正在恢复中，等待 %v 后重试 (第 %d 次)", waitTime, attempt)
+			}
 			if attempt < maxHTTPRetries {
 				s.logger.Warn("获取连接失败(第 %d 次，将重试): %v", attempt, err)
-				time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+				time.Sleep(waitTime)
 				continue
 			}
+			// 最后一次重试失败，返回错误（但这种情况应该很少发生）
 			return nil, 0, fmt.Errorf("获取连接失败(重试 %d 次后仍失败): %w", attempt, err)
 		}
 
@@ -518,15 +531,27 @@ func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *ta
 		resp, err := conn.RoundTrip(httpReq)
 		if err != nil {
 			lastErr = err
-			// 检查是否是连接已标记为不健康的错误，如果是，下次重试时会获取新连接
-			if strings.Contains(err.Error(), "连接已标记为不健康") {
-				s.logger.Debug("连接已标记为不健康，下次重试时将获取新连接")
+			// 优化等待时间：使用指数退避，但限制最大等待时间
+			// 对于连接问题，等待时间不要太长，避免请求超时
+			waitTime := time.Duration(attempt) * 200 * time.Millisecond
+			if strings.Contains(err.Error(), "连接已标记为不健康") ||
+				strings.Contains(err.Error(), "use of closed network connection") ||
+				strings.Contains(err.Error(), "connection closed") ||
+				strings.Contains(err.Error(), "broken pipe") ||
+				strings.Contains(err.Error(), "EOF") {
+				// 连接问题，等待稍长时间让快速健康检查恢复连接（但不超过500ms * attempt）
+				waitTime = time.Duration(attempt) * 300 * time.Millisecond
+				if waitTime > 2*time.Second {
+					waitTime = 2 * time.Second // 限制最大等待时间为2秒
+				}
+				s.logger.Debug("连接问题，等待 %v 让连接恢复后重试 (第 %d 次)", waitTime, attempt)
 			}
 			if attempt < maxHTTPRetries {
 				s.logger.Warn("HTTP 请求失败(第 %d 次，将重试): %v", attempt, err)
-				time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+				time.Sleep(waitTime)
 				continue
 			}
+			// 最后一次重试失败，释放连接并返回错误
 			s.utlsClient.ReleaseConnection(conn)
 			return nil, 0, fmt.Errorf("HTTP 请求失败(重试 %d 次后仍失败): %w", attempt, err)
 		}
@@ -606,8 +631,35 @@ func (s *Server) SubmitTask(ctx context.Context, req *tasksmanager.TaskRequest) 
 	// 使用热连接池执行任务（通过主机名获取连接，使用 IP 地址直接访问）
 	responseBody, statusCode, err := s.executeTaskWithHotPool(dataType, hostName, path, req)
 	if err != nil {
+		// 检查是否是连接问题（应该继续重试，而不是返回 500）
+		errStr := err.Error()
+		isConnectionError := strings.Contains(errStr, "获取连接失败") ||
+			strings.Contains(errStr, "没有可用连接") ||
+			strings.Contains(errStr, "所有连接都不健康") ||
+			strings.Contains(errStr, "HTTP 请求失败") ||
+			strings.Contains(errStr, "use of closed network connection") ||
+			strings.Contains(errStr, "connection closed") ||
+			strings.Contains(errStr, "broken pipe") ||
+			strings.Contains(errStr, "连接已标记为不健康")
+		
+		if isConnectionError {
+			// 连接问题，不应该返回 500，应该继续重试
+			// 但这里已经重试了 10 次，说明连接池可能有问题
+			// 记录详细日志，但不返回 500（返回一个临时错误，让客户端知道需要重试）
+			s.logger.Warn("任务执行失败（连接问题，已重试10次）: %s, 错误: %v", taskID, err)
+			// 返回 503 Service Unavailable，表示服务暂时不可用，客户端可以重试
+			errorStatusCode := int32(503)
+			errorBody := []byte(fmt.Sprintf("服务暂时不可用，请稍后重试: %v", err))
+			return &tasksmanager.TaskResponse{
+				TaskClientId:           req.TaskClientId,
+				TaskType:               req.TaskType,
+				TaskResponseBody:       errorBody,
+				TaskResponseStatusCode: &errorStatusCode,
+			}, nil
+		}
+		
+		// 其他错误（如配置错误），返回 500
 		s.logger.Warn("任务执行失败: %s, 错误: %v", taskID, err)
-		// 返回错误响应
 		errorStatusCode := int32(500)
 		errorBody := []byte(fmt.Sprintf("任务执行失败: %v", err))
 		return &tasksmanager.TaskResponse{

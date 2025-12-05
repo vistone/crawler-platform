@@ -251,13 +251,18 @@ func sendTestRequest(client tasksmanager.TasksManagerClient, timeout time.Durati
 	}
 
 	// 检查响应状态码
-	if resp.TaskResponseStatusCode != nil && *resp.TaskResponseStatusCode == 200 {
-		return true, int64(len(resp.TaskResponseBody))
-	}
-
-	// 记录非200状态码
-	if reqID%100 == 0 && resp.TaskResponseStatusCode != nil {
-		fmt.Printf("请求返回非200状态码 (reqID=%d, workerID=%d): %d\n", reqID, workerID, *resp.TaskResponseStatusCode)
+	// 200 表示成功
+	// 503 表示服务暂时不可用（连接问题），应该重试，但这里统计为失败
+	// 500 表示服务器内部错误（配置错误等），应该统计为失败
+	if resp.TaskResponseStatusCode != nil {
+		statusCode := *resp.TaskResponseStatusCode
+		if statusCode == 200 {
+			return true, int64(len(resp.TaskResponseBody))
+		}
+		// 记录非200状态码（包括503和500）
+		if reqID%100 == 0 {
+			fmt.Printf("请求返回非200状态码 (reqID=%d, workerID=%d): %d\n", reqID, workerID, statusCode)
+		}
 	}
 
 	return false, 0
