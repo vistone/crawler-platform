@@ -486,24 +486,29 @@ func (pm *PoolManager) checkBlacklistRecovery() {
 				}
 			}()
 
-			// 验证连接（检查是否返回200）
-			validationResult, err := pm.validator.Validate(conn)
+			// 使用 CheckRecovery 检查连接是否恢复（只检查是否返回200，不要求SessionID）
+			recovered, err := pm.validator.CheckRecovery(conn)
 			if err != nil {
 				if errors.Is(err, ErrIPBlockedBy403) {
 					projlogger.Debug("黑名单IP %s 恢复检查：仍返回403，保持在黑名单", ipAddr)
 				} else {
-					projlogger.Debug("黑名单IP %s 恢复检查：验证失败: %v", ipAddr, err)
+					projlogger.Debug("黑名单IP %s 恢复检查：检查失败: %v", ipAddr, err)
 				}
 				return
 			}
 
-			// 验证成功（返回200），从黑名单移除并加入白名单
-			if validationResult != nil && validationResult.SessionID != "" {
+			// 如果恢复成功（返回200），从黑名单移除并加入白名单
+			if recovered {
 				// 从黑名单移除
 				pm.blacklist.Remove(ipAddr)
 
-				// 设置SessionID并加入白名单
-				conn.SetSessionID(validationResult.SessionID)
+				// 尝试获取SessionID（可选，不影响恢复判断）
+				validationResult, err := pm.validator.Validate(conn)
+				if err == nil && validationResult != nil && validationResult.SessionID != "" {
+					conn.SetSessionID(validationResult.SessionID)
+				}
+
+				// 加入白名单
 				pm.connManager.AddConnection(conn)
 
 				// 防止defer关闭连接

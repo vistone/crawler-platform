@@ -91,7 +91,8 @@ func (cm *ConnectionManager) GetConnection(ip string) *UTLSConnection {
 	return cm.connections[ip]
 }
 
-// GetConnectionsForHost 获取指定域名的所有连接。
+// GetConnectionsForHost 获取指定域名的所有健康连接。
+// 注意：只返回健康的连接，不健康的连接会被过滤掉。
 func (cm *ConnectionManager) GetConnectionsForHost(host string) []*UTLSConnection {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
@@ -109,7 +110,13 @@ func (cm *ConnectionManager) GetConnectionsForHost(host string) []*UTLSConnectio
 	var conns []*UTLSConnection
 	for _, ip := range ipListCopy {
 		if conn, connExists := cm.connections[ip]; connExists {
-			conns = append(conns, conn)
+			// 只返回健康的连接，过滤掉已标记为不健康的连接
+			conn.mu.Lock()
+			isHealthy := conn.healthy
+			conn.mu.Unlock()
+			if isHealthy {
+				conns = append(conns, conn)
+			}
 		}
 	}
 	return conns
@@ -153,7 +160,9 @@ func (cm *ConnectionManager) CleanupIdleConnections() int {
 	// 遍历时只收集信息，不做修改
 	for ip, conn := range cm.connections {
 		conn.mu.Lock()
-		isIdle := !conn.inUse && now.Sub(conn.created) > cm.config.IdleTimeout
+		// 检查最后使用时间，而不是创建时间
+		// 只有空闲（不在使用中）且最后使用时间超过 IdleTimeout 的连接才被清理
+		isIdle := !conn.inUse && now.Sub(conn.lastUsed) > cm.config.IdleTimeout
 		conn.mu.Unlock()
 		if isIdle {
 			toRemove = append(toRemove, ip)

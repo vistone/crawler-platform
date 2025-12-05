@@ -157,19 +157,8 @@ func (c *Client) maintenanceLoop() {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// 空闲连接清理定时器（如果配置了 IdleTimeout）
-	var cleanupTicker *time.Ticker
-	var cleanupTickerChan <-chan time.Time
-	if c.config.IdleTimeout > 0 {
-		// 清理间隔设置为 IdleTimeout 的一半，确保及时清理
-		cleanupInterval := c.config.IdleTimeout / 2
-		if cleanupInterval < 30*time.Second {
-			cleanupInterval = 30 * time.Second // 最小间隔30秒
-		}
-		cleanupTicker = time.NewTicker(cleanupInterval)
-		defer cleanupTicker.Stop()
-		cleanupTickerChan = cleanupTicker.C
-	}
+	// 不再清理空闲连接，只有系统关闭时才清理
+	// 失效的连接会被去激活（标记为不健康），但不会清理，等待恢复
 
 	for {
 		select {
@@ -180,12 +169,6 @@ func (c *Client) maintenanceLoop() {
 			cleanedBlacklist := c.blacklist.Cleanup()
 			if cleanedBlacklist > 0 {
 				projlogger.Info("从黑名单中移除了 %d 个过期的IP", cleanedBlacklist)
-			}
-		case <-cleanupTickerChan:
-			// 定期清理空闲超时的连接
-			cleaned := c.connManager.CleanupIdleConnections()
-			if cleaned > 0 {
-				projlogger.Info("清理了 %d 个空闲超时的连接", cleaned)
 			}
 		case <-c.stopChan:
 			return
@@ -211,22 +194,38 @@ func (c *Client) healthCheck() {
 	var wg sync.WaitGroup
 
 	for _, conn := range allConns {
-		if !conn.TryAcquire() {
+		// 健康检查时，如果连接正在使用中，跳过检查（避免干扰正在使用的连接）
+		// 注意：不健康的连接也需要检查，以便恢复它们
+		conn.mu.Lock()
+		inUse := conn.inUse
+		wasHealthy := conn.healthy
+		conn.mu.Unlock()
+
+		if inUse {
+			// 连接正在使用中，跳过健康检查
 			continue
 		}
+
+		// 标记为使用中，避免并发问题
+		conn.mu.Lock()
+		if conn.inUse {
+			conn.mu.Unlock()
+			continue // 在检查期间被其他goroutine获取了
+		}
+		conn.inUse = true
+		conn.mu.Unlock()
 
 		wg.Add(1)
 		semaphore <- struct{}{} // 获取信号量
 
-		go func(conn *UTLSConnection) {
-			removed := false // 标记连接是否已被移除
+		go func(conn *UTLSConnection, wasHealthy bool) {
 			defer func() {
 				<-semaphore // 释放信号量
 				wg.Done()
-				// 如果连接已被移除，不需要再释放
-				if !removed {
-					c.ReleaseConnection(conn)
-				}
+				// 释放连接
+				conn.mu.Lock()
+				conn.inUse = false
+				conn.mu.Unlock()
 			}()
 
 			// 安全地读取targetHost
@@ -234,6 +233,11 @@ func (c *Client) healthCheck() {
 			targetHost := conn.targetHost
 			targetIP := conn.targetIP
 			conn.mu.Unlock()
+
+			// 记录是否检查不健康的连接
+			if !wasHealthy {
+				projlogger.Debug("健康检查：尝试恢复不健康的连接 %s", targetIP)
+			}
 
 			// 使用配置的健康检查路径，如果没有配置则使用默认路径
 			healthCheckPath := c.config.HealthCheckPath
@@ -250,35 +254,37 @@ func (c *Client) healthCheck() {
 
 			resp, err := conn.RoundTrip(req)
 			if err != nil {
-				projlogger.Warn("健康检查失败(网络错误)，连接 %s 将被移除", targetIP)
-				// 立即移除失败的连接
-				c.connManager.RemoveConnection(targetIP)
-				removed = true
+				// 网络错误：去激活连接（标记为不健康），但不清理，等待恢复
+				projlogger.Debug("健康检查失败(网络错误)，连接 %s 去激活，错误详情: %v（连接保持，等待恢复）", targetIP, err)
+				conn.markAsUnhealthy()
 				return
 			}
 			defer resp.Body.Close()
 
-			// 只有返回 200 才是健康的，其他状态码都视为不健康
+			// 只有返回 200 才是健康的，其他状态码的处理
 			switch resp.StatusCode {
 			case http.StatusOK:
-				// 连接健康，不需要做任何处理
+				// 连接健康，如果之前被标记为不健康，现在恢复健康（激活）
+				conn.mu.Lock()
+				if !conn.healthy {
+					conn.healthy = true
+					projlogger.Info("✅ 连接 %s 已激活（恢复健康）", targetIP)
+				}
+				conn.mu.Unlock()
 				projlogger.Debug("健康检查通过，连接 %s 状态正常", targetIP)
 			case http.StatusForbidden:
+				// 只有403错误才加入黑名单并移除连接
 				projlogger.Warn("健康检查发现403，将IP %s 从白名单降级到黑名单", targetIP)
 				c.blacklist.Add(targetIP)
 				conn.markAsUnhealthy()
-				// 立即移除不健康的连接
+				// 立即移除不健康的连接（只有403才移除）
 				c.connManager.RemoveConnection(targetIP)
-				removed = true
 			default:
-				// 其他非 200 状态码（如 404, 500 等）都视为不健康
-				projlogger.Warn("健康检查发现状态码 %d（非200），将移除连接 %s，但IP不加入黑名单", resp.StatusCode, targetIP)
+				// 其他非 200 状态码：去激活连接（标记为不健康），但不清理，等待恢复
+				projlogger.Debug("健康检查发现状态码 %d（非200），连接 %s 去激活（连接保持，等待恢复）", resp.StatusCode, targetIP)
 				conn.markAsUnhealthy()
-				// 立即移除不健康的连接
-				c.connManager.RemoveConnection(targetIP)
-				removed = true
 			}
-		}(conn)
+		}(conn, wasHealthy)
 	}
 
 	wg.Wait()

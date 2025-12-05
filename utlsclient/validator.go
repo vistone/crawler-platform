@@ -23,6 +23,9 @@ type ValidationResult struct {
 // Validator 定义了验证一个新连接的接口。
 type Validator interface {
 	Validate(conn *UTLSConnection) (*ValidationResult, error)
+	// CheckRecovery 检查连接是否恢复（只检查是否返回200，不要求SessionID）
+	// 用于黑名单恢复检查，只要返回200就认为恢复成功
+	CheckRecovery(conn *UTLSConnection) (bool, error)
 }
 
 // ConfigurableValidator 是一个可配置的验证器实现。
@@ -139,5 +142,57 @@ func (v *ConfigurableValidator) Validate(conn *UTLSConnection) (*ValidationResul
 		// 其他所有非200状态码，视为临时性或服务器端问题，不应拉黑IP。
 		// 这些错误不影响其他IP的验证，继续尝试即可
 		return nil, fmt.Errorf("验证失败，状态码: %d", resp.StatusCode)
+	}
+}
+
+// CheckRecovery 检查连接是否恢复（只检查是否返回200，不要求SessionID）
+// 用于黑名单恢复检查，只要返回200就认为恢复成功
+func (v *ConfigurableValidator) CheckRecovery(conn *UTLSConnection) (bool, error) {
+	// 使用域名而不是IP地址构建URL
+	url := "https://" + conn.targetHost + v.Path
+
+	// 如果需要生成新的body（通常是POST请求），每次验证时生成新的认证body
+	var requestBody []byte
+	if v.GenerateBody {
+		targetIP := conn.TargetIP()
+		ipHash := 0
+		for _, b := range []byte(targetIP) {
+			ipHash += int(b)
+		}
+		version := byte((ipHash % 3) + 1)
+		requestBody, _ = ge.GenerateRandomGeAuth(version)
+	} else {
+		requestBody = v.Body
+	}
+
+	req, err := http.NewRequest(v.Method, url, bytes.NewReader(requestBody))
+	if err != nil {
+		return false, fmt.Errorf("构建恢复检查请求失败: %w", err)
+	}
+
+	// 对于 POST 请求，必须设置 Content-Type 和 Content-Length
+	if v.Method == "POST" && len(requestBody) > 0 {
+		req.Header.Set("Content-Type", "application/octet-stream")
+		req.Header.Set("Content-Length", fmt.Sprintf("%d", len(requestBody)))
+	}
+
+	resp, err := conn.RoundTrip(req)
+	if err != nil {
+		// 网络层错误
+		return false, fmt.Errorf("恢复检查请求网络失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 只检查状态码，200就认为恢复成功，403就认为仍被封禁
+	switch resp.StatusCode {
+	case http.StatusOK:
+		// 返回200，认为恢复成功
+		return true, nil
+	case http.StatusForbidden:
+		// 返回403，认为仍被封禁
+		return false, ErrIPBlockedBy403
+	default:
+		// 其他状态码，认为未恢复（但不是403，可能是临时性问题）
+		return false, fmt.Errorf("恢复检查失败，状态码: %d", resp.StatusCode)
 	}
 }

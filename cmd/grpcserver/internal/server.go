@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -445,34 +446,6 @@ func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *ta
 	// 记录各个阶段的时间
 	//totalStart := time.Now()
 
-	// 通过 utlsclient.Client 按主机名获取连接（复用已预热的连接）
-	connStart := time.Now()
-	conn, err := s.utlsClient.GetConnectionForHost(hostName)
-	if err != nil {
-		return nil, 0, fmt.Errorf("获取连接失败: %w", err)
-	}
-	defer s.utlsClient.ReleaseConnection(conn)
-	connTime := time.Since(connStart)
-
-	// 日志：打印本次请求实际使用的目标 IP 和本地源 IP，便于观察热连接池是否在利用多个 IP。
-	//targetIP := conn.TargetIP()
-	//localIPForLog := conn.LocalIP()
-	//if targetIP != "" {
-	//	if localIPForLog != "" {
-	//		s.logger.Debug("UTLS 连接获取成功: host=%s, 目标IP=%s, 本地IP=%s, 数据类型=%s, 获取耗时=%v",
-	//			hostName, targetIP, localIPForLog, dataType, connTime)
-	//	} else {
-	//		s.logger.Debug("UTLS 连接获取成功: host=%s, 目标IP=%s, 本地IP=(系统默认), 数据类型=%s, 获取耗时=%v",
-	//			hostName, targetIP, dataType, connTime)
-	//	}
-	//}
-
-	if connTime > 500*time.Millisecond {
-		s.logger.Debug("⚠️ 获取连接耗时: %v (数据类型: %s)", connTime, dataType)
-	}
-
-	//buildURLStart := time.Now()
-
 	// 使用主机名和路径构建请求 URL（底层连接已绑定到具体 IP）
 	requestURL := fmt.Sprintf("https://%s%s", hostName, path)
 
@@ -494,8 +467,33 @@ func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *ta
 	// 发送请求（带 5xx 与网络错误重试）
 	const maxHTTPRetries = 3
 	var lastErr error
+	var conn *utlsclient.UTLSConnection
 
 	for attempt := 1; attempt <= maxHTTPRetries; attempt++ {
+		// 每次重试都获取新连接（如果连接已标记为不健康，会获取新连接）
+		connStart := time.Now()
+		newConn, err := s.utlsClient.GetConnectionForHost(hostName)
+		if err != nil {
+			lastErr = err
+			if attempt < maxHTTPRetries {
+				s.logger.Warn("获取连接失败(第 %d 次，将重试): %v", attempt, err)
+				time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+				continue
+			}
+			return nil, 0, fmt.Errorf("获取连接失败(重试 %d 次后仍失败): %w", attempt, err)
+		}
+
+		// 释放旧连接（如果有）
+		if conn != nil {
+			s.utlsClient.ReleaseConnection(conn)
+		}
+		conn = newConn
+
+		connTime := time.Since(connStart)
+		if connTime > 500*time.Millisecond {
+			s.logger.Debug("⚠️ 获取连接耗时: %v (数据类型: %s, 尝试: %d)", connTime, dataType, attempt)
+		}
+
 		// 每次重试都重新构建请求（因为 Body 是一次性的 Reader）
 		var bodyReader io.Reader
 		if len(req.TaskBody) > 0 {
@@ -504,6 +502,7 @@ func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *ta
 
 		httpReq, err := http.NewRequest(method, requestURL, bodyReader)
 		if err != nil {
+			s.utlsClient.ReleaseConnection(conn)
 			return nil, 0, fmt.Errorf("创建 HTTP 请求失败: %w", err)
 		}
 
@@ -519,13 +518,21 @@ func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *ta
 		resp, err := conn.RoundTrip(httpReq)
 		if err != nil {
 			lastErr = err
+			// 检查是否是连接已标记为不健康的错误，如果是，下次重试时会获取新连接
+			if strings.Contains(err.Error(), "连接已标记为不健康") {
+				s.logger.Debug("连接已标记为不健康，下次重试时将获取新连接")
+			}
 			if attempt < maxHTTPRetries {
 				s.logger.Warn("HTTP 请求失败(第 %d 次，将重试): %v", attempt, err)
 				time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
 				continue
 			}
+			s.utlsClient.ReleaseConnection(conn)
 			return nil, 0, fmt.Errorf("HTTP 请求失败(重试 %d 次后仍失败): %w", attempt, err)
 		}
+
+		// 请求成功，释放连接并返回
+		s.utlsClient.ReleaseConnection(conn)
 
 		// 成功拿到响应，读取响应体
 		responseBody, readErr := io.ReadAll(resp.Body)

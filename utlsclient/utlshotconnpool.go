@@ -34,9 +34,10 @@ type UTLSConnection struct {
 	h2ClientConn *http2.ClientConn
 	h2Mu         sync.Mutex
 
-	created time.Time
-	healthy bool
-	inUse   bool
+	created  time.Time
+	lastUsed time.Time // 最后使用时间，用于空闲超时检查
+	healthy  bool
+	inUse    bool
 
 	requestCount int64
 	errorCount   int64
@@ -148,8 +149,14 @@ func (c *UTLSConnection) Close() error {
 func (c *UTLSConnection) RoundTrip(req *http.Request) (*http.Response, error) {
 	atomic.AddInt64(&c.requestCount, 1)
 
-	// 安全地读取共享字段
+	// 安全地读取共享字段，并检查连接健康状态
 	c.mu.Lock()
+	if !c.healthy {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("连接已标记为不健康")
+	}
+	// 更新最后使用时间
+	c.lastUsed = time.Now()
 	fingerprint := c.fingerprint
 	sessionID := c.sessionID
 	targetHost := c.targetHost
@@ -204,16 +211,18 @@ func (c *UTLSConnection) RoundTrip(req *http.Request) (*http.Response, error) {
 func (c *UTLSConnection) roundTripH1(req *http.Request) (*http.Response, error) {
 	err := req.Write(c.tlsConn)
 	if err != nil {
-		c.markAsUnhealthy()
+		// 网络错误不标记为不健康，允许重试（只有403才标记为不健康）
+		// 连接断开是正常的，下次使用时会自动恢复
 		return nil, err
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(c.tlsConn), req)
 	if err != nil {
-		c.markAsUnhealthy()
+		// 网络错误不标记为不健康，允许重试（只有403才标记为不健康）
+		// 连接断开是正常的，下次使用时会自动恢复
 		return nil, err
 	}
 
-	// 检测403错误，将IP加入黑名单
+	// 检测403错误，将IP加入黑名单（只有403才标记为不健康）
 	if resp.StatusCode == http.StatusForbidden {
 		c.handle403()
 	}
@@ -232,7 +241,15 @@ func (c *UTLSConnection) roundTripH2(req *http.Request) (*http.Response, error) 
 	c.mu.Unlock()
 
 	c.h2Mu.Lock()
-	if c.h2ClientConn == nil {
+	// 检查 HTTP/2 连接是否存在且可用
+	if c.h2ClientConn == nil || !c.h2ClientConn.CanTakeNewRequest() {
+		// 如果连接不存在或不可用，先关闭旧连接（如果存在）
+		if c.h2ClientConn != nil {
+			c.h2ClientConn.Close()
+			c.h2ClientConn = nil
+		}
+
+		// 创建新的 HTTP/2 连接
 		t := &http2.Transport{
 			DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
 				return c.tlsConn, nil
@@ -241,8 +258,9 @@ func (c *UTLSConnection) roundTripH2(req *http.Request) (*http.Response, error) 
 		clientConn, err := t.NewClientConn(c.tlsConn)
 		if err != nil {
 			c.h2Mu.Unlock()
-			c.markAsUnhealthy()
-			return nil, err
+			// 创建 HTTP/2 连接失败，不标记为不健康（只有403才标记为不健康）
+			// 连接关闭是正常的，返回错误让上层重试，重试时会获取新的连接
+			return nil, fmt.Errorf("创建 HTTP/2 连接失败: %w", err)
 		}
 		c.h2ClientConn = clientConn
 	}
@@ -252,8 +270,8 @@ func (c *UTLSConnection) roundTripH2(req *http.Request) (*http.Response, error) 
 
 	resp, err := h2Conn.RoundTrip(req)
 	if err != nil {
-		c.markAsUnhealthy()
-		// 如果请求失败，关闭 HTTP/2 连接，避免 readLoop goroutine 泄漏
+		// 请求失败，关闭 HTTP/2 连接，避免 readLoop goroutine 泄漏
+		// 但不标记为不健康，下次使用时会自动重建连接（只有403才标记为不健康）
 		c.h2Mu.Lock()
 		if c.h2ClientConn == h2Conn {
 			c.h2ClientConn.Close()
@@ -274,12 +292,14 @@ func (c *UTLSConnection) roundTripH2(req *http.Request) (*http.Response, error) 
 	return resp, err
 }
 
-// markAsUnhealthy 是一个内部方法，用于在发生错误时将连接标记为不健康。
+// markAsUnhealthy 是一个内部方法，用于在发生错误时将连接标记为不健康（去激活）。
+// 注意：去激活不等于清理，连接仍然保留在连接池中，等待恢复。
 func (c *UTLSConnection) markAsUnhealthy() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	atomic.AddInt64(&c.errorCount, 1)
 	c.healthy = false
+	// 注意：不清理连接，只标记为不健康，等待恢复
 }
 
 // handle403 处理403错误：标记连接为不健康，并调用回调函数将IP加入黑名单
@@ -405,7 +425,7 @@ func establishConnection(ip, domain string, config *PoolConfig, on403 func(strin
 		return nil, fmt.Errorf("TLS握手失败: %w", err)
 	}
 
-	projlogger.Debug("TLS握手成功: %s -> %s", domain, ip)
+	//projlogger.Debug("TLS握手成功: %s -> %s", domain, ip)
 
 	// 创建连接对象（用于健康检查）
 	conn := &UTLSConnection{
@@ -417,6 +437,7 @@ func establishConnection(ip, domain string, config *PoolConfig, on403 func(strin
 		fingerprint:    fingerprint,
 		acceptLanguage: fpLibrary.RandomAcceptLanguage(),
 		created:        time.Now(),
+		lastUsed:       time.Now(), // 初始化时设置最后使用时间
 		healthy:        true,
 		on403:          on403, // 设置403回调函数
 	}
@@ -449,7 +470,7 @@ func establishConnection(ip, domain string, config *PoolConfig, on403 func(strin
 	switch healthCheckResp.StatusCode {
 	case http.StatusOK:
 		// 连接健康，可以继续使用
-		projlogger.Debug("TLS握手和健康检查成功: %s -> %s", domain, ip)
+		//projlogger.Debug("TLS握手和健康检查成功: %s -> %s,返回的数据长度: %d", domain, ip, healthCheckResp.ContentLength)
 	case http.StatusForbidden:
 		// 403 错误，将 IP 加入黑名单
 		if on403 != nil {
@@ -470,7 +491,7 @@ func establishConnection(ip, domain string, config *PoolConfig, on403 func(strin
 
 	// 所有步骤都成功了，设置标志位，防止defer关闭连接
 	success = true
-	projlogger.Debug("TLS握手和健康检查成功: %s -> %s", domain, ip)
+	projlogger.Debug("TLS握手和健康检查成功: %s -> %s,返回的数据长度: %d", domain, ip, healthCheckResp.ContentLength)
 	return conn, nil
 }
 
