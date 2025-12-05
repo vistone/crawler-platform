@@ -80,13 +80,6 @@ func main() {
 			log.Fatalf("提交任务失败: %v", err)
 		}
 	}
-	return
-
-	// 测试基础连接
-	log.Println("=== 测试基础连接 ===")
-	if err := testBasicConnection(ctx, client); err != nil {
-		log.Printf("基础连接测试失败: %v", err)
-	}
 
 	// 测试客户端注册
 	log.Println("\n=== 客户端注册 ===")
@@ -331,7 +324,7 @@ func submitRealTask(ctx context.Context, client tasksmanager.TasksManagerClient,
 
 	log.Printf("提交任务请求: task_type=%s, TileKey=%s, epoch=%d", taskTypeStr, tileKey, epoch)
 
-	// 发送任务请求
+	// 发送任务请求（单次请求，状态码非 200 视为失败）
 	startTime := time.Now()
 	resp, err := client.SubmitTask(ctx, req)
 	elapsed := time.Since(startTime)
@@ -358,7 +351,7 @@ func submitRealTask(ctx context.Context, client tasksmanager.TasksManagerClient,
 	log.Printf("响应 Epoch: %d", resp.Epoch)
 
 	if statusCode != 200 {
-		log.Printf("警告: 任务返回非 200 状态码: %d", statusCode)
+		return fmt.Errorf("任务返回非 200 状态码: %d", statusCode)
 	}
 
 	return nil
@@ -379,6 +372,8 @@ func getResponseBodySize(resp *tasksmanager.TaskResponse) int {
 	}
 	return 0
 }
+
+// （客户端侧重试逻辑已移除，是否重试由调用方或服务端控制）
 
 // submitRealTaskMultipleTimes 重复提交同一个任务请求多次（用于性能测试）
 func submitRealTaskMultipleTimes(ctx context.Context, client tasksmanager.TasksManagerClient, clientID, taskTypeStr, tileKey string, epoch int32, repeatCount, concurrency int) error {
@@ -455,6 +450,13 @@ func submitRealTaskMultipleTimes(ctx context.Context, client tasksmanager.TasksM
 					continue
 				}
 
+				statusCode := getResponseStatusCode(resp)
+				if statusCode != 200 {
+					atomic.AddInt64(&failedTasks, 1)
+					log.Printf("❌ [Worker %d] 请求 #%d 返回非 200 状态码: %d", workerID, taskID+1, statusCode)
+					continue
+				}
+
 				atomic.AddInt64(&completedTasks, 1)
 
 				// 记录第一次请求的时间（使用 sync.Once 确保线程安全）
@@ -472,13 +474,9 @@ func submitRealTaskMultipleTimes(ctx context.Context, client tasksmanager.TasksM
 					atomic.AddInt64(&totalBytes, int64(len(resp.TaskResponseBody)))
 				}
 
-				statusCode := getResponseStatusCode(resp)
-
-				// 每10个请求输出一次进度
-				if (taskID+1)%10 == 0 || taskID == 0 {
-					log.Printf("✅ [Worker %d] 请求 #%d: 状态码=%d, 耗时=%v, 响应大小=%d 字节",
-						workerID, taskID+1, statusCode, elapsed, getResponseBodySize(resp))
-				}
+				// 每次成功请求输出进度
+				log.Printf("✅ [Worker %d] 请求 #%d: 状态码=%d, 耗时=%v, 响应大小=%d 字节",
+					workerID, taskID+1, statusCode, elapsed, getResponseBodySize(resp))
 
 				// 如果是第一次请求，输出详细信息
 				if taskID == 0 {

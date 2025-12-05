@@ -7,10 +7,11 @@ import ( // 导入所需的标准库
 	"math/big"        // 用于大整数运算
 	mrand "math/rand" // 用于伪随机数生成
 	"net"             // 用于网络相关功能
-	"os/exec"         // 用于执行系统命令
 	"strings"         // 用于字符串操作
 	"sync"            // 用于同步原语如互斥锁
 	"time"            // 用于时间处理
+
+	"github.com/vishvananda/netlink" // 用于高性能地与Linux内核网络接口交互
 )
 
 // IPPool 定义了IP地址池的行为接口。
@@ -25,6 +26,8 @@ type IPPool interface { // 定义IPPool接口
 	MarkIPUnused(ip net.IP) // 标记IP地址为未使用方法
 	// SetTargetIPCount 设置目标IP数量（用于IPv6地址池动态调整）
 	SetTargetIPCount(count int) // 设置目标IP数量方法
+	// SupportsDynamicPool 检查池是否支持动态地址生成。
+	SupportsDynamicPool() bool
 	// Closer io.Closer 接口的实现，允许使用 defer pool.Close() 的方式优雅关闭。
 	io.Closer // 嵌入Closer接口，用于资源清理
 }
@@ -91,14 +94,18 @@ func NewLocalIPPool(staticIPv4s []string, ipv6SubnetCIDR string) (IPPool, error)
 		stopChan: make(chan struct{}),                               // 创建停止信号通道
 	}
 
+	// --- 状态变量，用于最后打印摘要 ---
+	var detectedIPv4s []string
+	var finalIPv6Mode string = "已禁用"
+	var finalIPv6Subnet string = "N/A"
+	var finalIPv6Interface string = "N/A"
+	var finalIPv6Note string = "未检测到可用IPv6子网或路由"
+
 	// 如果未提供静态IPv4地址，自动检测系统中可用的IPv4地址
 	if len(staticIPv4s) == 0 {
-		detectedIPv4s := detectAvailableIPv4Addresses()
+		detectedIPv4s = detectAvailableIPv4Addresses()
 		if len(detectedIPv4s) > 0 {
-			fmt.Printf("[IP池] 自动检测到 %d 个IPv4地址: %v\n", len(detectedIPv4s), detectedIPv4s)
 			staticIPv4s = detectedIPv4s
-		} else {
-			fmt.Println("[IP池] 警告: 未检测到可用的IPv4地址")
 		}
 	}
 
@@ -116,17 +123,13 @@ func NewLocalIPPool(staticIPv4s []string, ipv6SubnetCIDR string) (IPPool, error)
 		if len(detectedSubnets) > 0 {
 			// 优先使用第一个检测到的/64子网
 			ipv6SubnetCIDR = detectedSubnets[0]
-			fmt.Printf("[IP池] 自动检测到IPv6子网: %s\n", ipv6SubnetCIDR)
 		} else {
 			// 即使没有检测到公网IPv6子网，如果系统支持IPv6路由（如通过隧道），
 			// 仍然可以创建IPv6池，但不绑定本地IP，让系统自动选择路由
 			if hasIPv6RoutingSupport() {
-				fmt.Println("[IP池] 未检测到公网IPv6子网，但系统支持IPv6路由（可能通过隧道），将创建IPv6池（不绑定本地IP）")
 				// 创建一个虚拟的IPv6子网，用于标识IPv6支持
 				// 实际使用时不会绑定本地IP，而是让系统自动选择路由
 				ipv6SubnetCIDR = "2000::/3" // 使用全局单播地址范围作为标识
-			} else {
-				fmt.Println("[IP池] 未检测到可用的IPv6子网，将使用IPv4模式")
 			}
 		}
 	}
@@ -144,14 +147,17 @@ func NewLocalIPPool(staticIPv4s []string, ipv6SubnetCIDR string) (IPPool, error)
 		// 核心逻辑：检查当前系统网络配置是否真的支持此IPv6子网。
 		if isSubnetConfigured(subnet) || isVirtualSubnet { // 检查子网是否已配置，或者是虚拟子网（隧道模式）
 			if isVirtualSubnet {
-				fmt.Println("[IP池] 检测到IPv6路由支持（隧道模式），已启用IPv6模式（不绑定本地IP）。") // 输出日志
 				// 对于隧道模式，不绑定本地IP，让系统自动选择路由
 				// 创建一个特殊的IPv6池，GetIP返回nil表示不绑定本地IP
 				pool.hasIPv6Support = true
 				pool.ipv6Subnet = subnet
 				// 不创建IPv6队列，GetIP时返回nil，表示不绑定本地IP
+
+				finalIPv6Mode = "已启用 (隧道模式)"
+				finalIPv6Subnet = subnet.String()
+				finalIPv6Note = "GetIP()将返回nil，由操作系统自动选择出口IP"
+
 			} else {
-				fmt.Println("[IP池] 检测到可用的IPv6子网，已启用IPv6动态生成模式。") // 输出日志
 				pool.hasIPv6Support = true                       // 设置IPv6支持标志
 				pool.ipv6Subnet = subnet                         // 设置IPv6子网
 				pool.ipv6Queue = make(chan net.IP, 100)          // 预生成100个IPv6地址作为缓冲区。
@@ -164,20 +170,42 @@ func NewLocalIPPool(staticIPv4s []string, ipv6SubnetCIDR string) (IPPool, error)
 				// 检测IPv6接口名称
 				pool.ipv6Interface = detectIPv6Interface(subnet)
 				if pool.ipv6Interface == "" {
-					fmt.Println("[IP池] 警告: 未找到IPv6接口，将尝试使用 ipv6net")
 					pool.ipv6Interface = "ipv6net" // 默认接口名称
-				} else {
-					fmt.Printf("[IP池] 检测到IPv6接口: %s\n", pool.ipv6Interface)
 				}
+
+				finalIPv6Mode = "已启用 (动态生成模式)"
+				finalIPv6Subnet = subnet.String()
+				finalIPv6Interface = pool.ipv6Interface
+				finalIPv6Note = "将在此接口上动态创建和销毁IPv6地址"
+
 				// 启动时清理旧的IPv6地址
 				pool.cleanupOldIPv6Addresses(subnet)
 				go pool.producer()            // 在后台启动IPv6地址生产者。
 				go pool.manageIPv6Addresses() // 在后台启动IPv6地址管理器（热加载）
 			}
-		} else { // 如果子网未配置
-			fmt.Printf("[IP池] 警告: 未在当前网络环境中检测到指定的IPv6子网 %s，已降级为仅IPv4模式。\n", ipv6SubnetCIDR) // 输出日志
 		}
 	}
+
+	// --- 打印初始化摘要 ---
+	fmt.Println("--- [IP 池初始化状态] ---")
+	// 打印IPv4状态
+	if len(pool.staticIPv4s) > 0 {
+		var ipv4Strings []string
+		for _, ip := range pool.staticIPv4s {
+			ipv4Strings = append(ipv4Strings, ip.String())
+		}
+		fmt.Printf("  [IPv4] 可用地址: %v\n", ipv4Strings)
+	} else {
+		fmt.Println("  [IPv4] 可用地址: 未检测到或未提供")
+	}
+	// 打印IPv6状态
+	fmt.Printf("  [IPv6] 支持状态: %s\n", finalIPv6Mode)
+	fmt.Printf("  [IPv6] 使用子网: %s\n", finalIPv6Subnet)
+	if finalIPv6Interface != "N/A" {
+		fmt.Printf("  [IPv6] 绑定接口: %s\n", finalIPv6Interface)
+	}
+	fmt.Printf("  [IPv6] 说明: %s\n", finalIPv6Note)
+	fmt.Println("--------------------------")
 
 	// 如果最终没有任何可用的IP地址，则初始化失败。
 	if !pool.hasIPv6Support && len(pool.staticIPv4s) == 0 { // 如果既不支持IPv6又没有IPv4地址
@@ -787,9 +815,19 @@ func (p *LocalIPPool) ensureIPv6AddressCreated(ip net.IP) {
 		interfaceName = "ipv6net" // 默认接口名称
 	}
 
-	// 使用 ip addr add 命令创建地址
-	cmd := exec.Command("ip", "addr", "add", ipStr+"/128", "dev", interfaceName)
-	if err := cmd.Run(); err != nil {
+	link, err := netlink.LinkByName(interfaceName)
+	if err != nil {
+		fmt.Printf("[IP池] 警告: 获取接口 %s 失败: %v\n", interfaceName, err)
+		return
+	}
+
+	addr, err := netlink.ParseAddr(ipStr + "/128")
+	if err != nil {
+		fmt.Printf("[IP池] 警告: 解析IPv6地址 %s 失败: %v\n", ipStr, err)
+		return
+	}
+
+	if err := netlink.AddrAdd(link, addr); err != nil {
 		// 创建失败，记录错误但不阻塞
 		fmt.Printf("[IP池] 警告: 创建IPv6地址 %s 失败: %v\n", ipStr, err)
 		return
@@ -823,14 +861,24 @@ func (p *LocalIPPool) isIPv6AddressExists(ipStr string) bool {
 		interfaceName = "ipv6net"
 	}
 
-	// 使用 ip addr show 命令检查地址是否存在
-	cmd := exec.Command("ip", "-6", "addr", "show", "dev", interfaceName)
-	output, err := cmd.Output()
+	link, err := netlink.LinkByName(interfaceName)
+	if err != nil {
+		// 接口不存在，地址也就不存在
+		return false
+	}
+
+	addrs, err := netlink.AddrList(link, netlink.FAMILY_V6)
 	if err != nil {
 		return false
 	}
 
-	return strings.Contains(string(output), ipStr)
+	for _, addr := range addrs {
+		if addr.IP.String() == ipStr {
+			return true
+		}
+	}
+
+	return false
 }
 
 // cleanupCreatedIPv6Addresses 清理所有创建的IPv6地址
@@ -850,6 +898,12 @@ func (p *LocalIPPool) cleanupCreatedIPv6Addresses() {
 		interfaceName = "ipv6net"
 	}
 
+	link, err := netlink.LinkByName(interfaceName)
+	if err != nil {
+		fmt.Printf("[IP池] 警告: 清理时获取接口 %s 失败: %v\n", interfaceName, err)
+		return
+	}
+
 	cleaned := 0
 	skipped := 0
 	for ipStr := range p.createdIPv6Addrs {
@@ -860,9 +914,13 @@ func (p *LocalIPPool) cleanupCreatedIPv6Addresses() {
 			continue
 		}
 
-		// 使用 ip addr del 命令删除地址
-		cmd := exec.Command("ip", "addr", "del", ipStr+"/128", "dev", interfaceName)
-		if err := cmd.Run(); err != nil {
+		addr, err := netlink.ParseAddr(ipStr + "/128")
+		if err != nil {
+			fmt.Printf("[IP池] 警告: 清理时解析IPv6地址 %s 失败: %v\n", ipStr, err)
+			continue
+		}
+
+		if err := netlink.AddrDel(link, addr); err != nil {
 			// 删除失败，记录但不阻塞
 			fmt.Printf("[IP池] 警告: 删除IPv6地址 %s 失败: %v\n", ipStr, err)
 		} else {
@@ -920,9 +978,19 @@ func (p *LocalIPPool) ReleaseIP(ip net.IP) {
 		interfaceName = "ipv6net"
 	}
 
-	// 使用 ip addr del 命令删除地址
-	cmd := exec.Command("ip", "addr", "del", ipStr+"/128", "dev", interfaceName)
-	if err := cmd.Run(); err != nil {
+	link, err := netlink.LinkByName(interfaceName)
+	if err != nil {
+		fmt.Printf("[IP池] 警告: 获取接口 %s 失败: %v\n", interfaceName, err)
+		return
+	}
+
+	addr, err := netlink.ParseAddr(ipStr + "/128")
+	if err != nil {
+		fmt.Printf("[IP池] 警告: 解析IPv6地址 %s 失败: %v\n", ipStr, err)
+		return
+	}
+
+	if err := netlink.AddrDel(link, addr); err != nil {
 		fmt.Printf("[IP池] 警告: 删除IPv6地址 %s 失败: %v\n", ipStr, err)
 	} else {
 		fmt.Printf("[IP池] 已释放IPv6地址: %s/%s\n", ipStr, interfaceName)
@@ -1002,39 +1070,30 @@ func (p *LocalIPPool) cleanupOldIPv6Addresses(subnet *net.IPNet) {
 		interfaceName = "ipv6net"
 	}
 
-	// 获取接口上所有的IPv6地址
-	cmd := exec.Command("ip", "-6", "addr", "show", "dev", interfaceName)
-	output, err := cmd.Output()
+	link, err := netlink.LinkByName(interfaceName)
 	if err != nil {
 		fmt.Printf("[IP池] 警告: 无法获取接口 %s 的IPv6地址列表: %v\n", interfaceName, err)
 		return
 	}
 
-	// 解析输出，找到所有属于子网的IPv6地址
-	lines := strings.Split(string(output), "\n")
+	addrs, err := netlink.AddrList(link, netlink.FAMILY_V6)
+	if err != nil {
+		fmt.Printf("[IP池] 警告: 无法获取接口 %s 的IPv6地址列表: %v\n", interfaceName, err)
+		return
+	}
+
 	cleaned := 0
 	skipped := 0
 
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "inet6 ") {
-			continue
-		}
-
-		// 解析地址，格式如: inet6 2607:8700:5500:2943::2ca9/128 scope global
-		parts := strings.Fields(line)
-		if len(parts) < 2 {
-			continue
-		}
-
-		addrStr := strings.Split(parts[1], "/")[0] // 提取IP地址部分
-		ip := net.ParseIP(addrStr)
+	for _, addr := range addrs {
+		ip := addr.IP
 		if ip == nil {
 			continue
 		}
 
 		// 检查地址是否属于子网
 		if subnet.Contains(ip) {
+			addrStr := ip.String()
 			// 跳过系统保留地址（如 ::2），但需要将它们添加到活跃地址列表中
 			if isReservedIPv6Address(ip) {
 				// 将保留地址添加到活跃地址列表中，确保它们被正确管理
@@ -1049,8 +1108,7 @@ func (p *LocalIPPool) cleanupOldIPv6Addresses(subnet *net.IPNet) {
 			}
 
 			// 删除地址
-			delCmd := exec.Command("ip", "addr", "del", ip.String()+"/128", "dev", interfaceName)
-			if err := delCmd.Run(); err != nil {
+			if err := netlink.AddrDel(link, &addr); err != nil {
 				// 删除失败，可能是系统保留地址，静默跳过
 				skipped++
 			} else {
@@ -1097,7 +1155,6 @@ func (p *LocalIPPool) adjustIPv6AddressPool() {
 	interfaceName := p.ipv6Interface
 	batchSize := p.batchSize
 	minActive := p.minActiveAddrs
-	maxActive := p.maxActiveAddrs
 	p.mu.RUnlock()
 
 	if !hasSupport || subnet == nil {
@@ -1114,7 +1171,7 @@ func (p *LocalIPPool) adjustIPv6AddressPool() {
 	p.activeIPv6Mutex.RUnlock()
 
 	// 如果目标IP数量未设置，跳过调整
-	if minActive == 0 || maxActive == 0 {
+	if minActive == 0 {
 		return
 	}
 
@@ -1134,6 +1191,12 @@ func (p *LocalIPPool) adjustIPv6AddressPool() {
 // batchCreateIPv6Addresses 批量创建IPv6地址
 // 返回值：实际创建的地址数量
 func (p *LocalIPPool) batchCreateIPv6Addresses(count int, subnet *net.IPNet, interfaceName string) int {
+	link, err := netlink.LinkByName(interfaceName)
+	if err != nil {
+		// 接口不存在，无法创建
+		return 0
+	}
+
 	created := 0
 	for i := 0; i < count; i++ {
 		ip := p.generateRandomIPInSubnet()
@@ -1166,9 +1229,12 @@ func (p *LocalIPPool) batchCreateIPv6Addresses(count int, subnet *net.IPNet, int
 			continue
 		}
 
-		// 创建地址（批量创建时不打印单个地址的日志，避免日志过多）
-		cmd := exec.Command("ip", "addr", "add", ipStr+"/128", "dev", interfaceName)
-		if err := cmd.Run(); err != nil {
+		addr, err := netlink.ParseAddr(ipStr + "/128")
+		if err != nil {
+			// 解析失败，跳过
+			continue
+		}
+		if err := netlink.AddrAdd(link, addr); err != nil {
 			// 创建失败，静默跳过（批量创建时不需要每个都打印）
 			continue
 		}
@@ -1189,6 +1255,12 @@ func (p *LocalIPPool) batchCreateIPv6Addresses(count int, subnet *net.IPNet, int
 
 // batchDeleteIPv6Addresses 批量删除IPv6地址（删除指定的地址列表）
 func (p *LocalIPPool) batchDeleteIPv6Addresses(count int, interfaceName string, addrsToDelete []string) {
+	link, err := netlink.LinkByName(interfaceName)
+	if err != nil {
+		fmt.Printf("[IP池] 警告: 批量删除时获取接口 %s 失败: %v\n", interfaceName, err)
+		return
+	}
+
 	deleted := 0
 	skipped := 0
 	for _, ipStr := range addrsToDelete {
@@ -1200,9 +1272,12 @@ func (p *LocalIPPool) batchDeleteIPv6Addresses(count int, interfaceName string, 
 			continue
 		}
 
-		// 删除地址
-		cmd := exec.Command("ip", "addr", "del", ipStr+"/128", "dev", interfaceName)
-		if err := cmd.Run(); err != nil {
+		addr, err := netlink.ParseAddr(ipStr + "/128")
+		if err != nil {
+			fmt.Printf("[IP池] 警告: 批量删除时解析IPv6地址 %s 失败: %v\n", ipStr, err)
+			continue
+		}
+		if err := netlink.AddrDel(link, addr); err != nil {
 			fmt.Printf("[IP池] 警告: 批量删除IPv6地址 %s 失败: %v\n", ipStr, err)
 			continue
 		}
@@ -1227,9 +1302,24 @@ func (p *LocalIPPool) batchDeleteIPv6Addresses(count int, interfaceName string, 
 	}
 }
 
+// SupportsDynamicPool 检查池是否支持动态IPv6地址生成。
+func (p *LocalIPPool) SupportsDynamicPool() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	// 动态池仅在IPv6动态生成模式下受支持，
+	// 在隧道模式（ipv6Queue为nil）或仅IPv4模式下不受支持。
+	return p.hasIPv6Support && p.ipv6Queue != nil
+}
+
 // SetTargetIPCount 设置目标IP数量（用于IPv6地址池动态调整）
 // 目标：创建与RemoteDomainIPPool对等的IPv6地址池
 func (p *LocalIPPool) SetTargetIPCount(count int) {
+	// 如果当前模式不支持动态池，则打印警告并直接返回。
+	if !p.SupportsDynamicPool() {
+		fmt.Println("[IP池] 警告: 调用 SetTargetIPCount 被忽略，因为未启用IPv6动态地址池功能。")
+		return
+	}
+
 	if count <= 0 {
 		return
 	}

@@ -1,6 +1,12 @@
 package main
 
 import (
+	"context"
+	server "crawler-platform/cmd/grpcserver/internal"
+	"crawler-platform/localippool"
+	"crawler-platform/logger"
+	"crawler-platform/remotedomainippool"
+	"crawler-platform/utlsclient"
 	"crypto/tls"
 	"log"
 	"net"
@@ -8,11 +14,6 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
-
-	server "crawler-platform/cmd/grpcserver/internal"
-	"crawler-platform/localippool"
-	"crawler-platform/logger"
-	"crawler-platform/remotedomainippool"
 )
 
 func main() {
@@ -86,23 +87,37 @@ func main() {
 			log.Printf("错误: 创建本地 IP 池失败: %v", err)
 			localIPPool = nil
 		} else {
-			log.Printf("本地 IP 池已初始化")
 			// 如果配置了目标 IP 数量，设置它
 			if config.LocalIPPool.TargetIPCount > 0 {
 				localIPPool.SetTargetIPCount(config.LocalIPPool.TargetIPCount)
-				log.Printf("已设置本地 IP 池目标 IP 数量: %d", config.LocalIPPool.TargetIPCount)
 			}
 			// 将 IP 池设置到 Server 中
-			if localIPPool != nil {
+			if localIPPool.GetIP() != nil {
 				// 创建一个包装器以匹配 Server 的 IPPoolInterface
 				ipPoolWrapper := &ipPoolWrapper{pool: localIPPool}
+				logger.Info("已设置 IP 池", "ip_pool", ipPoolWrapper.GetIP())
 				srv.SetIPPool(ipPoolWrapper)
 			}
 		}
 	}
-
+	// 设置任务执行配置到服务器（直接使用 config.go 中定义的配置）
+	srv.SetRockTreeDataConfig(
+		config.RockTreeData.Enable,
+		config.RockTreeData.HostName,
+		config.RockTreeData.BulkMetadataPath,
+		config.RockTreeData.NodeDataPath,
+		config.RockTreeData.ImageryDataPath,
+	)
+	srv.SetGoogleEarthDesktopDataConfig(
+		config.GoogleEarthDesktopData.Enable,
+		config.GoogleEarthDesktopData.HostName,
+		config.GoogleEarthDesktopData.Q2Path,
+		config.GoogleEarthDesktopData.ImageryPath,
+		config.GoogleEarthDesktopData.TerrainPath,
+	)
 	// 初始化并启动域名 IP 监控器（如果启用）
 	var domainMonitor remotedomainippool.DomainMonitor
+	var utlsClient *utlsclient.Client
 	if config.DomainMonitor.Enable && len(config.DNSDomain.HostName) > 0 {
 		// 从 JSON 文件加载 DNS 服务器列表
 		dnsServers, err := LoadDNSServersFromJSON(config.DomainMonitor.DNSServersFile)
@@ -158,66 +173,93 @@ func main() {
 					}
 				}()
 			}
+
+			// 基于 DomainMonitor 创建 UTLS 客户端的 RemoteIPPool。
+			// 预热只针对启用的数据类型对应的 HostName，而不是 DNSDomain 中的所有域名。
+			// 为了避免 "远程IP池为空" 的情况，这里启动一个后台协程，等待这些域名首次加载到 IP 后再创建 UTLS 客户端。
+			var prewarmDomains []string
+			if config.RockTreeData.Enable && config.RockTreeData.HostName != "" {
+				prewarmDomains = append(prewarmDomains, config.RockTreeData.HostName)
+			}
+			if config.GoogleEarthDesktopData.Enable && config.GoogleEarthDesktopData.HostName != "" {
+				prewarmDomains = append(prewarmDomains, config.GoogleEarthDesktopData.HostName)
+			}
+
+			if len(prewarmDomains) > 0 {
+				go func() {
+					const maxWait = 60 * time.Second
+					const interval = 2 * time.Second
+					start := time.Now()
+
+					for {
+						ready := false
+						for _, domain := range prewarmDomains {
+							pool, found := domainMonitor.GetDomainPool(domain)
+							if !found || pool == nil {
+								continue
+							}
+							ipCount := 0
+							if ipv4Records, ok := pool["ipv4"]; ok {
+								ipCount += len(ipv4Records)
+							}
+							if ipv6Records, ok := pool["ipv6"]; ok {
+								ipCount += len(ipv6Records)
+							}
+							if ipCount > 0 {
+								ready = true
+								break
+							}
+						}
+
+						if ready {
+							log.Printf("域名 IP 池已准备就绪，将启动 UTLS 客户端进行预热")
+							break
+						}
+						if time.Since(start) > maxWait {
+							log.Printf("警告: 等待域名 IP 池超时（%v），UTLS 客户端将使用当前空 IP 池启动", maxWait)
+							break
+						}
+						time.Sleep(interval)
+					}
+
+					// RemoteIPPool 只暴露 prewarmDomains 的 IP，用于 UTLS 预热
+					remotePool := server.NewDomainMonitorRemotePool(domainMonitor, prewarmDomains)
+					// 将 UtlsClientConfig 转换为 utlsclient.PoolConfig
+					poolConfig := config.UtlsClient.ToPoolConfig()
+					// 设置本地 IP 池（如果已启用）
+					if localIPPool != nil {
+						poolConfig.LocalIPPool = localIPPool
+						log.Printf("已设置本地 IP 池到 UTLS 客户端，将使用本地地址池作为源 IP")
+					}
+					if config.GoogleEarthDesktopData.Enable {
+						log.Println("已启用 GoogleEarthDesktopData，将使用 UTLS 池")
+						poolConfig.HealthCheckPath = config.GoogleEarthDesktopData.HealthCheckPath
+						poolConfig.SessionIdPath = config.GoogleEarthDesktopData.SessionIdPath
+						log.Printf("设置配置: HealthCheckPath=%s, SessionIdPath=%s", poolConfig.HealthCheckPath, poolConfig.SessionIdPath)
+					}
+					if config.RockTreeData.Enable {
+						log.Println("已启用 RockTreeData，将使用 UTLS 池")
+						poolConfig.HealthCheckPath = config.RockTreeData.HealthCheckPath
+						poolConfig.SessionIdPath = config.RockTreeData.SessionIdPath
+					}
+
+					client, cerr := utlsclient.NewClient(poolConfig, remotePool)
+					if cerr != nil {
+						log.Printf("错误: 创建 UTLS 客户端失败: %v", cerr)
+						return
+					}
+					client.Start()
+					log.Printf("UTLS 客户端已启动，使用域名 IP 池进行连接预热")
+
+					// 赋值给外层变量并注入到服务器
+					utlsClient = client
+					srv.SetUTLSClient(client)
+				}()
+			}
 		}
 	}
 
-	// 初始化热连接池管理器并创建对应的热连接池（如果启用）
-	var hotConnPoolManager *server.HotConnPoolManager
-	if domainMonitor != nil {
-		hotConnPoolManager = server.NewHotConnPoolManager(domainMonitor)
-
-		// 等待域名 IP 池数据加载完成
-		go func() {
-			// 等待域名监控器完成首次更新
-			time.Sleep(10 * time.Second)
-
-			// 检查 RockTreeData 配置，如果启用则创建热连接池
-			if config.RockTreeData.Enable && config.RockTreeData.HostName != "" && config.RockTreeData.HotConnectPath != "" {
-				err := hotConnPoolManager.CreatePoolForDataType("RockTreeData", config.RockTreeData.HostName, config.RockTreeData.HotConnectPath, "GET")
-				if err != nil {
-					log.Printf("创建 RockTreeData 热连接池失败: %v", err)
-				} else {
-					// 预热连接（预热 10 个连接）
-					if err := hotConnPoolManager.PreloadConnections("RockTreeData", 10); err != nil {
-						log.Printf("预热 RockTreeData 连接失败: %v", err)
-					}
-				}
-			}
-
-			// 检查 GoogleEarthDesktopData 配置，如果启用则创建热连接池
-			if config.GoogleEarthDesktopData.Enable && config.GoogleEarthDesktopData.HostName != "" && config.GoogleEarthDesktopData.HotConnectPath != "" {
-				err := hotConnPoolManager.CreatePoolForDataType("GoogleEarthDesktopData", config.GoogleEarthDesktopData.HostName, config.GoogleEarthDesktopData.HotConnectPath, "POST")
-				if err != nil {
-					log.Printf("创建 GoogleEarthDesktopData 热连接池失败: %v", err)
-				} else {
-					// 预热连接（预热 10 个连接）
-					if err := hotConnPoolManager.PreloadConnections("GoogleEarthDesktopData", 10); err != nil {
-						log.Printf("预热 GoogleEarthDesktopData 连接失败: %v", err)
-					}
-				}
-			}
-		}()
-
-		// 设置热连接池管理器到服务器
-		srv.SetHotConnPoolManager(hotConnPoolManager)
-
-		// 设置任务执行配置到服务器（直接使用 config.go 中定义的配置）
-		srv.SetRockTreeDataConfig(
-			config.RockTreeData.Enable,
-			config.RockTreeData.HostName,
-			config.RockTreeData.BulkMetadataPath,
-			config.RockTreeData.NodeDataPath,
-			config.RockTreeData.ImageryDataPath,
-		)
-		srv.SetGoogleEarthDesktopDataConfig(
-			config.GoogleEarthDesktopData.Enable,
-			config.GoogleEarthDesktopData.HostName,
-			config.GoogleEarthDesktopData.Q2Path,
-			config.GoogleEarthDesktopData.ImageryPath,
-			config.GoogleEarthDesktopData.TerrainPath,
-		)
-		log.Println("已设置热连接池管理器和任务执行配置到服务器")
-	}
+	log.Println("已设置任务执行配置到服务器")
 
 	// 启动服务器（在 goroutine 中）
 	go func() {
@@ -229,25 +271,57 @@ func main() {
 	// 等待中断信号
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	log.Println("服务器已启动，按 Ctrl+C 退出...")
 	<-quit
 
-	log.Println("正在关闭服务器...")
+	log.Println("\n收到退出信号，正在关闭服务器...")
 
-	// 停止域名 IP 监控器
-	if domainMonitor != nil {
-		log.Println("正在停止域名 IP 监控器...")
-		domainMonitor.Stop()
+	// 创建关闭超时上下文（最多等待 30 秒）
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// 在 goroutine 中执行关闭操作
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+
+		// 停止域名 IP 监控器
+		if domainMonitor != nil {
+			log.Println("正在停止域名 IP 监控器...")
+			domainMonitor.Stop()
+			log.Println("域名 IP 监控器已停止")
+		}
+
+		// 停止 UTLS 客户端
+		if utlsClient != nil {
+			log.Println("正在停止 UTLS 客户端...")
+			utlsClient.Stop()
+			log.Println("UTLS 客户端已停止")
+		}
+
+		// 关闭本地 IP 池
+		if localIPPool != nil {
+			log.Println("正在关闭本地 IP 池...")
+			if err := localIPPool.Close(); err != nil {
+				log.Printf("关闭本地 IP 池时出错: %v", err)
+			} else {
+				log.Println("本地 IP 池已关闭")
+			}
+		}
+
+		// 关闭服务器（会自动关闭 IP 池）
+		srv.Stop()
+	}()
+
+	// 等待关闭完成或超时
+	select {
+	case <-shutdownDone:
+		log.Println("服务器已成功关闭")
+	case <-shutdownCtx.Done():
+		log.Println("警告: 关闭超时，强制退出")
+		os.Exit(1)
 	}
-
-	// 关闭所有热连接池
-	if hotConnPoolManager != nil {
-		log.Println("正在关闭所有热连接池...")
-		hotConnPoolManager.CloseAll()
-	}
-
-	// 关闭服务器（会自动关闭 IP 池）
-	srv.Stop()
-	log.Println("服务器已关闭")
 }
 
 // ipPoolWrapper 包装 localippool.IPPool 以实现 Server 的 IPPoolInterface 接口

@@ -1,397 +1,285 @@
 package utlsclient
 
 import (
-	"bufio"
-	"bytes"
-	"context"
-	"errors"
 	"fmt"
-	"io"
+	"math/rand"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
 	projlogger "crawler-platform/logger"
-
-	utls "github.com/refraction-networking/utls"
-
-	"golang.org/x/net/http2"
 )
 
-// IsConnectionError 检查错误是否是连接错误（导出以供测试使用）
-func IsConnectionError(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	for _, keyword := range ConnectionErrorKeywords {
-		if strings.Contains(errStr, keyword) {
-			return true
-		}
-	}
-	// 检查是否是预定义的连接错误
-	return errors.Is(err, ErrConnectionBroken) || errors.Is(err, ErrConnectionClosed)
+// Client 是 utlsclient 包的核心客户端和入口。
+type Client struct {
+	config      *PoolConfig
+	connManager *ConnectionManager
+	blacklist   *Blacklist
+	poolManager *PoolManager
+
+	stopChan chan struct{}
+	wg       sync.WaitGroup
+	running  bool
+	mu       sync.Mutex
 }
 
-// UTLSClient 是一个基于 uTLS 的 HTTP 客户端，用于模拟真实浏览器
-type UTLSClient struct {
-	conn       *UTLSConnection
-	timeout    time.Duration
-	userAgent  string
-	maxRetries int
-}
-
-// NewUTLSClient 创建新的 UTLS 客户端
-func NewUTLSClient(conn *UTLSConnection) *UTLSClient {
-	return &UTLSClient{
-		conn:       conn,
-		timeout:    30 * time.Second,
-		userAgent:  conn.fingerprint.UserAgent,
-		maxRetries: 3,
-	}
-}
-
-// SetTimeout 设置请求超时时间
-func (c *UTLSClient) SetTimeout(timeout time.Duration) {
-	c.timeout = timeout
-}
-
-// SetUserAgent 设置 User-Agent
-func (c *UTLSClient) SetUserAgent(userAgent string) {
-	c.userAgent = userAgent
-}
-
-// SetMaxRetries 设置最大重试次数
-func (c *UTLSClient) SetMaxRetries(maxRetries int) {
-	c.maxRetries = maxRetries
-}
-
-// SetDebug 设置调试模式（兼容旧接口）
-// 注意：此方法已废弃，请使用全局日志系统 SetGlobalLogger 来控制日志输出
-func (c *UTLSClient) SetDebug(debug bool) {
-	// 为了兼容性，如果启用调试模式，设置全局日志为默认日志记录器
-	if debug {
-		projlogger.SetGlobalLogger(&projlogger.DefaultLogger{})
-	}
-	// 如果禁用调试模式，不做任何操作，使用当前的全局日志设置
-}
-
-// Do 执行 HTTP 请求
-func (c *UTLSClient) Do(req *http.Request) (*http.Response, error) {
-	return c.DoWithContext(context.Background(), req)
-}
-
-// DoWithContext 带上下文的 HTTP 请求
-func (c *UTLSClient) DoWithContext(ctx context.Context, req *http.Request) (*http.Response, error) {
-	// 设置请求头
-	if req.Header.Get("User-Agent") == "" {
-		req.Header.Set("User-Agent", c.userAgent)
-	}
-	// 设置Accept-Language（如果没有设置）
-	if req.Header.Get("Accept-Language") == "" && c.conn.acceptLanguage != "" {
-		req.Header.Set("Accept-Language", c.conn.acceptLanguage)
-	}
-	// 设置 Cookie（如果连接有 sessionID 且请求中没有设置 Cookie）
-	if req.Header.Get("Cookie") == "" {
-		if sessionID := c.conn.GetSessionID(); sessionID != "" {
-			req.Header.Set("Cookie", fmt.Sprintf("SessionId=%s;State=1", sessionID))
-		}
-	}
-	// Host 优先由调用方设定；若为空则从热连接参数传递（仅参数注入，不做连接管理）
-	if req.Host == "" {
-		if h := c.conn.TargetHost(); h != "" {
-			req.Host = h
-		} else if req.URL != nil && req.URL.Host != "" {
-			req.Host = req.URL.Host
-		}
+// NewClient 创建并初始化所有组件。
+func NewClient(config *PoolConfig, remotePool RemoteIPPool) (*Client, error) {
+	if config == nil || remotePool == nil {
+		// 修正：使用 fmt.Errorf 替代 errors.New
+		return nil, fmt.Errorf("配置和远程IP池提供者不能为空")
 	}
 
-	var lastErr error
-	for i := 0; i <= c.maxRetries; i++ {
-		if i > 0 {
-			projlogger.Debug("请求重试 %d/%d", i, c.maxRetries)
-			time.Sleep(time.Duration(i) * DefaultRetryDelay)
-		}
+	// 1. 创建黑名单和连接管理器 (ConnectionManager 即为白名单)
+	blacklist := NewBlacklist(config.IPBlacklistTimeout)
+	connManager := NewConnectionManager(config)
 
-		resp, err := c.doRequest(ctx, req)
-		if err == nil {
-			return resp, nil
-		}
-		lastErr = err
-	}
+	// 2. 根据配置创建验证器（使用 SessionIdPath 进行 POST 请求获取 sessionid）
+	projlogger.Debug("创建验证器: SessionIdPath=%s, SessionIdBody长度=%d", config.SessionIdPath, len(config.SessionIdBody))
+	validator := NewConfigurableValidator(
+		config.SessionIdPath,
+		"POST", // SessionIdPath 始终使用 POST 方法
+		config.SessionIdBody,
+	)
 
-	return nil, fmt.Errorf("%w: %v", ErrMaxRetriesExceeded, lastErr)
+	// 3. 创建主动式池管理器，并注入所有依赖
+	poolManager := NewPoolManager(remotePool, connManager, blacklist, validator, config)
+
+	return &Client{
+		config:      config,
+		connManager: connManager,
+		blacklist:   blacklist,
+		poolManager: poolManager,
+		stopChan:    make(chan struct{}),
+	}, nil
 }
 
-// doRequest 实际执行请求
-func (c *UTLSClient) doRequest(ctx context.Context, req *http.Request) (*http.Response, error) {
-	// 创建带超时的上下文
-	if c.timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, c.timeout)
-		defer cancel()
+// Start 启动所有后台服务。
+func (c *Client) Start() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.running {
+		return
 	}
-
-	// 检测协商的协议
-	negotiatedProto := c.conn.tlsConn.ConnectionState().NegotiatedProtocol
-	projlogger.Debug("使用协议: %s", negotiatedProto)
-
-	// 如果协商了 HTTP/2，使用 http2.Transport
-	if negotiatedProto == "h2" {
-		return c.doHTTP2Request(ctx, req)
-	}
-
-	// 否则使用 HTTP/1.1
-	return c.doHTTP1Request(ctx, req)
+	c.running = true
+	c.stopChan = make(chan struct{})
+	c.poolManager.Start()
+	c.wg.Add(1)
+	go c.maintenanceLoop()
+	projlogger.Info("UTLS 客户端已启动")
 }
 
-// doHTTP2Request 使用 HTTP/2 执行请求
-func (c *UTLSClient) doHTTP2Request(ctx context.Context, req *http.Request) (*http.Response, error) {
-	// 获取或创建 HTTP/2 客户端连接
-	c.conn.h2Mu.Lock()
-	var cc *http2.ClientConn
-	if c.conn.h2ClientConn != nil {
-		cc = c.conn.h2ClientConn
-		// 检查连接是否可用
-		if !cc.CanTakeNewRequest() {
-			cc.Close()
-			c.conn.h2ClientConn = nil
-			cc = nil
+// Stop 优雅地停止所有后台任务。
+func (c *Client) Stop() {
+	c.mu.Lock()
+	if !c.running {
+		c.mu.Unlock()
+		return
+	}
+	c.running = false
+	close(c.stopChan)
+	c.mu.Unlock()
+
+	c.poolManager.Stop()
+	c.wg.Wait()
+	c.connManager.Close()
+	projlogger.Info("UTLS 客户端已停止")
+}
+
+// GetConnectionForHost 从“白名单”(ConnectionManager)中获取一个健康的连接。
+func (c *Client) GetConnectionForHost(host string) (*UTLSConnection, error) {
+	connections := c.connManager.GetConnectionsForHost(host)
+	if len(connections) == 0 {
+		return nil, fmt.Errorf("没有到主机 %s 的可用连接，请等待PoolManager预热", host)
+	}
+
+	// 为了让同一主机的多个预热连接都能参与请求，这里从随机位置开始尝试获取连接。
+	n := len(connections)
+
+	start := rand.Intn(n)
+	for i := 0; i < n; i++ {
+		idx := (start + i) % n
+		conn := connections[idx]
+		projlogger.Info("获取热连接索引 %d，ip是 %s，已经完成请求数: %d", idx, conn.TargetIP(), conn.requestCount)
+		if conn.TryAcquire() {
+			return conn, nil
 		}
 	}
 
-	if cc == nil {
-		t := &http2.Transport{}
-		var err error
-		cc, err = t.NewClientConn(c.conn.tlsConn)
-		if err != nil {
-			c.conn.h2Mu.Unlock()
-			return nil, fmt.Errorf("创建HTTP/2连接失败: %w", err)
-		}
-		c.conn.h2ClientConn = cc
-		projlogger.Debug("创建新的HTTP/2客户端连接")
-	} else {
-		projlogger.Debug("复用现有HTTP/2客户端连接")
-	}
-	c.conn.h2Mu.Unlock()
-
-	projlogger.Debug("发送HTTP/2请求: %s %s", req.Method, req.URL.String())
-
-	// 执行请求
-	resp, err := cc.RoundTrip(req)
-	if err != nil {
-		// 如果请求失败，标记连接为需要重建
-		c.conn.h2Mu.Lock()
-		if c.conn.h2ClientConn == cc {
-			cc.Close()
-			c.conn.h2ClientConn = nil
-		}
-		c.conn.h2Mu.Unlock()
-		return nil, fmt.Errorf("发送请求失败: %w", err)
-	}
-
-	return resp, nil
+	return nil, fmt.Errorf("主机 %s 的所有连接当前都在使用中", host)
 }
 
-// doHTTP1Request 使用 HTTP/1.1 执行请求
-func (c *UTLSClient) doHTTP1Request(ctx context.Context, req *http.Request) (*http.Response, error) {
-	// 构建原始 HTTP 请求
-	rawReq, err := c.buildRawRequest(req)
-	if err != nil {
-		return nil, fmt.Errorf("构建原始请求失败: %w", err)
+// ReleaseConnection 将使用完毕的连接交还给客户端处理。
+func (c *Client) ReleaseConnection(conn *UTLSConnection) {
+	if conn == nil {
+		return
 	}
 
-	projlogger.Debug("发送请求:\n%s", rawReq)
+	// 先获取连接锁，安全地读取状态和IP
+	conn.mu.Lock()
+	isHealthy := conn.healthy
+	targetIP := conn.targetIP
+	inUse := conn.inUse
 
-	// 通过连接的 RoundTripRaw 执行实际传输（不在此处理连接细节）
-	reader, err := c.conn.RoundTripRaw(ctx, []byte(rawReq))
-	if err != nil {
-		return nil, fmt.Errorf("发送请求失败: %w", err)
+	// 如果连接不健康，检查是否还在连接池中
+	if !isHealthy {
+		conn.mu.Unlock()
+		// 检查连接是否还在连接池中（可能已经被健康检查移除了）
+		if c.connManager.GetConnection(targetIP) != nil {
+			projlogger.Warn("连接 %s 在使用中发生错误，将被销毁", targetIP)
+			c.connManager.RemoveConnection(targetIP)
+		} else {
+			// 连接已经被移除，只记录调试日志
+			projlogger.Debug("连接 %s 已被移除（可能在健康检查中被移除）", targetIP)
+		}
+		return
 	}
 
-	// 读取响应
-	resp, err := c.readResponse(ctx, req, reader)
-	if err != nil {
-		return nil, fmt.Errorf("读取响应失败: %w", err)
+	// 检查连接是否真的在使用中
+	if !inUse {
+		// 连接未被使用，可能是重复释放
+		conn.mu.Unlock()
+		projlogger.Debug("尝试释放未使用的连接 %s", targetIP)
+		return
 	}
 
-	return resp, nil
+	// 释放连接
+	conn.inUse = false
+	conn.mu.Unlock()
 }
 
-// buildRawRequest 构建原始 HTTP 请求
-func (c *UTLSClient) buildRawRequest(req *http.Request) (string, error) {
-	var buf bytes.Buffer
+func (c *Client) maintenanceLoop() {
+	defer c.wg.Done()
+	interval := c.config.HealthCheckInterval
+	if interval <= 0 {
+		interval = 5 * time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 
-	// 请求行
-	buf.WriteString(fmt.Sprintf("%s %s HTTP/1.1\r\n", req.Method, req.URL.RequestURI()))
-
-	// Host 头
-	buf.WriteString(fmt.Sprintf("Host: %s\r\n", req.Host))
-
-	// 其他头部
-	for key, values := range req.Header {
-		for _, value := range values {
-			buf.WriteString(fmt.Sprintf("%s: %s\r\n", key, value))
+	// 空闲连接清理定时器（如果配置了 IdleTimeout）
+	var cleanupTicker *time.Ticker
+	var cleanupTickerChan <-chan time.Time
+	if c.config.IdleTimeout > 0 {
+		// 清理间隔设置为 IdleTimeout 的一半，确保及时清理
+		cleanupInterval := c.config.IdleTimeout / 2
+		if cleanupInterval < 30*time.Second {
+			cleanupInterval = 30 * time.Second // 最小间隔30秒
 		}
+		cleanupTicker = time.NewTicker(cleanupInterval)
+		defer cleanupTicker.Stop()
+		cleanupTickerChan = cleanupTicker.C
 	}
 
-	// Content-Length 如果有 body
-	if req.Body != nil {
-		buf.WriteString(fmt.Sprintf("Content-Length: %d\r\n", req.ContentLength))
-	}
-
-	// Connection 头
-	if req.Header.Get("Connection") == "" {
-		buf.WriteString("Connection: keep-alive\r\n")
-	}
-
-	// 空行
-	buf.WriteString("\r\n")
-
-	// Body
-	if req.Body != nil {
-		defer req.Body.Close()
-		body, err := io.ReadAll(req.Body)
-		if err != nil {
-			return "", fmt.Errorf("读取请求体失败: %w", err)
-		}
-		buf.Write(body)
-	}
-
-	return buf.String(), nil
-}
-
-// readResponse 读取 HTTP 响应
-func (c *UTLSClient) readResponse(ctx context.Context, req *http.Request, r io.Reader) (*http.Response, error) {
-	// 创建 reader（由传输层提供的底层连接读端）
-	reader := bufio.NewReader(r)
-
-	// 读取状态行
-	statusLine, err := reader.ReadString('\n')
-	if err != nil {
-		return nil, fmt.Errorf("读取状态行失败: %w", err)
-	}
-
-	// 解析状态行
-	parts := strings.Split(strings.TrimSpace(statusLine), " ")
-	if len(parts) < 3 {
-		return nil, fmt.Errorf("无效的状态行: %s", statusLine)
-	}
-
-	statusCode := parts[1]
-	statusText := strings.Join(parts[2:], " ")
-
-	// 创建响应对象
-	resp := &http.Response{
-		Status:     fmt.Sprintf("%s %s", statusCode, statusText),
-		StatusCode: 0, // 稍后设置
-		Proto:      "HTTP/1.1",
-		ProtoMajor: 1,
-		ProtoMinor: 1,
-		Header:     make(http.Header),
-		Request:    req,
-	}
-
-	// 解析状态码
-	var n int
-	n, err = fmt.Sscanf(statusCode, "%d", &resp.StatusCode)
-	if err != nil || n != 1 {
-		return nil, fmt.Errorf("解析状态码失败: %s", statusCode)
-	}
-
-	// 读取头部
 	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return nil, fmt.Errorf("读取头部失败: %w", err)
+		select {
+		case <-ticker.C:
+			projlogger.Debug("开始对白名单连接进行健康检查...")
+			c.healthCheck()
+
+			cleanedBlacklist := c.blacklist.Cleanup()
+			if cleanedBlacklist > 0 {
+				projlogger.Info("从黑名单中移除了 %d 个过期的IP", cleanedBlacklist)
+			}
+		case <-cleanupTickerChan:
+			// 定期清理空闲超时的连接
+			cleaned := c.connManager.CleanupIdleConnections()
+			if cleaned > 0 {
+				projlogger.Info("清理了 %d 个空闲超时的连接", cleaned)
+			}
+		case <-c.stopChan:
+			return
+		}
+	}
+}
+
+// healthCheck 遍历所有白名单中的连接，检查其健康状况。
+func (c *Client) healthCheck() {
+	allConns := c.connManager.GetAllConnections()
+	if len(allConns) == 0 {
+		return
+	}
+
+	// 使用信号量限制并发数，避免创建过多goroutine
+	// 默认最大并发数为10，可以根据配置调整
+	maxConcurrency := 10
+	if c.config.MaxConcurrentPreWarms > 0 && c.config.MaxConcurrentPreWarms < maxConcurrency {
+		maxConcurrency = c.config.MaxConcurrentPreWarms
+	}
+
+	semaphore := make(chan struct{}, maxConcurrency)
+	var wg sync.WaitGroup
+
+	for _, conn := range allConns {
+		if !conn.TryAcquire() {
+			continue
 		}
 
-		line = strings.TrimSpace(line)
-		if line == "" {
-			break // 头部结束
-		}
+		wg.Add(1)
+		semaphore <- struct{}{} // 获取信号量
 
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue // 忽略无效头部
-		}
+		go func(conn *UTLSConnection) {
+			removed := false // 标记连接是否已被移除
+			defer func() {
+				<-semaphore // 释放信号量
+				wg.Done()
+				// 如果连接已被移除，不需要再释放
+				if !removed {
+					c.ReleaseConnection(conn)
+				}
+			}()
 
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-		resp.Header.Add(key, value)
+			// 安全地读取targetHost
+			conn.mu.Lock()
+			targetHost := conn.targetHost
+			targetIP := conn.targetIP
+			conn.mu.Unlock()
+
+			// 使用配置的健康检查路径，如果没有配置则使用默认路径
+			healthCheckPath := c.config.HealthCheckPath
+			if healthCheckPath == "" {
+				healthCheckPath = "/rt/earth/PlanetoidMetadata" // 默认健康检查路径
+			}
+
+			// 使用 GET 方法进行健康检查（因为需要验证返回 200）
+			req, err := http.NewRequest("GET", "https://"+targetHost+healthCheckPath, nil)
+			if err != nil {
+				projlogger.Warn("健康检查构建请求失败: %v, 连接 %s", err, targetIP)
+				return
+			}
+
+			resp, err := conn.RoundTrip(req)
+			if err != nil {
+				projlogger.Warn("健康检查失败(网络错误)，连接 %s 将被移除", targetIP)
+				// 立即移除失败的连接
+				c.connManager.RemoveConnection(targetIP)
+				removed = true
+				return
+			}
+			defer resp.Body.Close()
+
+			// 只有返回 200 才是健康的，其他状态码都视为不健康
+			switch resp.StatusCode {
+			case http.StatusOK:
+				// 连接健康，不需要做任何处理
+				projlogger.Debug("健康检查通过，连接 %s 状态正常", targetIP)
+			case http.StatusForbidden:
+				projlogger.Warn("健康检查发现403，将IP %s 从白名单降级到黑名单", targetIP)
+				c.blacklist.Add(targetIP)
+				conn.markAsUnhealthy()
+				// 立即移除不健康的连接
+				c.connManager.RemoveConnection(targetIP)
+				removed = true
+			default:
+				// 其他非 200 状态码（如 404, 500 等）都视为不健康
+				projlogger.Warn("健康检查发现状态码 %d（非200），将移除连接 %s，但IP不加入黑名单", resp.StatusCode, targetIP)
+				conn.markAsUnhealthy()
+				// 立即移除不健康的连接
+				c.connManager.RemoveConnection(targetIP)
+				removed = true
+			}
+		}(conn)
 	}
 
-	// 处理响应体
-	resp.Body = &responseBody{
-		reader: reader,
-		conn:   c.conn.tlsConn,
-	}
-
-	projlogger.Debug("收到响应: %s", resp.Status)
-	for key, values := range resp.Header {
-		projlogger.Debug("  %s: %s", key, strings.Join(values, ", "))
-	}
-
-	return resp, nil
-}
-
-// responseBody 响应体包装器
-type responseBody struct {
-	reader *bufio.Reader
-	conn   *utls.UConn
-	closed bool
-	mu     sync.Mutex
-}
-
-func (rb *responseBody) Read(p []byte) (int, error) {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-
-	if rb.closed {
-		return 0, io.EOF
-	}
-
-	return rb.reader.Read(p)
-}
-
-func (rb *responseBody) Close() error {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-
-	if rb.closed {
-		return nil
-	}
-
-	rb.closed = true
-	// 不关闭连接，让它保持 keep-alive
-	return nil
-}
-
-// Get 快捷方法：执行 GET 请求
-func (c *UTLSClient) Get(url string) (*http.Response, error) {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	return c.Do(req)
-}
-
-// Post 快捷方法：执行 POST 请求
-func (c *UTLSClient) Post(url string, contentType string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequest("POST", url, body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", contentType)
-	return c.Do(req)
-}
-
-// Head 快捷方法：执行 HEAD 请求
-func (c *UTLSClient) Head(url string) (*http.Response, error) {
-	req, err := http.NewRequest("HEAD", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	return c.Do(req)
+	wg.Wait()
 }

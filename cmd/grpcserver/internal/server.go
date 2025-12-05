@@ -71,8 +71,8 @@ type Server struct {
 	// 本地 IP 池（可选，用于 IP 地址管理）
 	ipPool IPPoolInterface
 
-	// 热连接池管理器（用于执行下载任务）
-	hotConnPoolManager *HotConnPoolManager
+	// UTLS 客户端（基于 utlsclient.Client，用于执行下载任务）
+	utlsClient *utlsclient.Client
 
 	// 任务执行配置（用于构建 URL 和选择热连接池）
 	// 这些配置字段从 config.go 中的 Config 结构体传递过来
@@ -160,9 +160,9 @@ func (s *Server) GetIPPool() IPPoolInterface {
 	return s.ipPool
 }
 
-// SetHotConnPoolManager 设置热连接池管理器
-func (s *Server) SetHotConnPoolManager(manager *HotConnPoolManager) {
-	s.hotConnPoolManager = manager
+// SetUTLSClient 设置 UTLS 客户端（用于通过 utlsclient.Client 执行任务）
+func (s *Server) SetUTLSClient(client *utlsclient.Client) {
+	s.utlsClient = client
 }
 
 // SetRockTreeDataConfig 设置 RockTree 数据配置（从 config.go 的 Config 结构体传递）
@@ -254,13 +254,18 @@ func (s *Server) Start() error {
 
 // Stop 停止 gRPC 服务器
 func (s *Server) Stop() {
+	s.logger.Info("开始停止服务器...")
+
 	// 停止节点连接管理器
 	if s.nodeConnector != nil {
+		s.logger.Info("正在停止节点连接管理器...")
 		s.nodeConnector.Stop()
+		s.logger.Info("节点连接管理器已停止")
 	}
 
 	// 关闭 IP 池（如果存在）
 	if s.ipPool != nil {
+		s.logger.Info("正在关闭 IP 池...")
 		if err := s.ipPool.Close(); err != nil {
 			s.logger.Warn("关闭 IP 池时出错: %v", err)
 		} else {
@@ -269,9 +274,26 @@ func (s *Server) Stop() {
 	}
 
 	if s.grpcServer != nil {
-		s.grpcServer.GracefulStop()
-		s.logger.Info("gRPC 服务器已停止")
+		s.logger.Info("正在停止 gRPC 服务器（优雅关闭，最多等待 10 秒）...")
+		// 使用带超时的优雅关闭
+		stopped := make(chan struct{})
+		go func() {
+			s.grpcServer.GracefulStop()
+			close(stopped)
+		}()
+
+		// 等待优雅关闭完成，最多等待 10 秒
+		select {
+		case <-stopped:
+			s.logger.Info("gRPC 服务器已优雅停止")
+		case <-time.After(10 * time.Second):
+			s.logger.Warn("优雅关闭超时，强制停止 gRPC 服务器...")
+			s.grpcServer.Stop()
+			s.logger.Info("gRPC 服务器已强制停止")
+		}
 	}
+
+	s.logger.Info("服务器停止完成")
 }
 
 // GetTaskClientInfoList 获取任务客户端列表
@@ -416,52 +438,43 @@ func (s *Server) buildPathForTask(taskType tasksmanager.TaskType, tileKey string
 // executeTaskWithHotPool 使用热连接池执行任务
 // 参数: dataType - 数据类型, hostName - 主机名（用于从池中获取连接）, path - 请求路径（包含查询参数）
 func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *tasksmanager.TaskRequest) ([]byte, int32, error) {
-	if s.hotConnPoolManager == nil {
-		return nil, 0, fmt.Errorf("热连接池管理器未设置")
-	}
-
-	// 获取对应的热连接池
-	pool, exists := s.hotConnPoolManager.GetPool(dataType)
-	if !exists {
-		return nil, 0, fmt.Errorf("数据类型 %s 的热连接池不存在", dataType)
+	if s.utlsClient == nil {
+		return nil, 0, fmt.Errorf("UTLS 客户端未设置")
 	}
 
 	// 记录各个阶段的时间
-	totalStart := time.Now()
+	//totalStart := time.Now()
 
-	// 从池中通过主机名获取连接（复用已预热的连接）
+	// 通过 utlsclient.Client 按主机名获取连接（复用已预热的连接）
 	connStart := time.Now()
-	conn, err := pool.GetConnection(hostName)
+	conn, err := s.utlsClient.GetConnectionForHost(hostName)
 	if err != nil {
 		return nil, 0, fmt.Errorf("获取连接失败: %w", err)
 	}
-	defer pool.PutConnection(conn)
+	defer s.utlsClient.ReleaseConnection(conn)
 	connTime := time.Since(connStart)
+
+	// 日志：打印本次请求实际使用的目标 IP 和本地源 IP，便于观察热连接池是否在利用多个 IP。
+	//targetIP := conn.TargetIP()
+	//localIPForLog := conn.LocalIP()
+	//if targetIP != "" {
+	//	if localIPForLog != "" {
+	//		s.logger.Debug("UTLS 连接获取成功: host=%s, 目标IP=%s, 本地IP=%s, 数据类型=%s, 获取耗时=%v",
+	//			hostName, targetIP, localIPForLog, dataType, connTime)
+	//	} else {
+	//		s.logger.Debug("UTLS 连接获取成功: host=%s, 目标IP=%s, 本地IP=(系统默认), 数据类型=%s, 获取耗时=%v",
+	//			hostName, targetIP, dataType, connTime)
+	//	}
+	//}
 
 	if connTime > 500*time.Millisecond {
 		s.logger.Debug("⚠️ 获取连接耗时: %v (数据类型: %s)", connTime, dataType)
 	}
 
-	// 获取连接的 IP 地址
-	targetIP := conn.TargetIP()
-	buildURLStart := time.Now()
+	//buildURLStart := time.Now()
 
-	// 使用 IP 地址和路径构建请求 URL（热连接是通过 IP 直接访问的）
-	// IPv6 地址需要用方括号包裹
-	var requestURL string
-	// 使用 net.ParseIP 更准确地判断是否为 IPv6 地址
-	ip := net.ParseIP(targetIP)
-	if ip != nil && ip.To4() == nil {
-		// IPv6 地址（To4() 返回 nil 表示是 IPv6 地址）
-		requestURL = fmt.Sprintf("https://[%s]%s", targetIP, path)
-	} else {
-		// IPv4 地址
-		requestURL = fmt.Sprintf("https://%s%s", targetIP, path)
-	}
-
-	// 创建 HTTP 客户端
-	client := utlsclient.NewUTLSClient(conn)
-	client.SetTimeout(30 * time.Second)
+	// 使用主机名和路径构建请求 URL（底层连接已绑定到具体 IP）
+	requestURL := fmt.Sprintf("https://%s%s", hostName, path)
 
 	// 确定 HTTP 方法
 	method := "GET"
@@ -478,56 +491,68 @@ func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *ta
 		}
 	}
 
-	// 创建 HTTP 请求
-	var bodyReader io.Reader
-	if len(req.TaskBody) > 0 {
-		bodyReader = bytes.NewReader(req.TaskBody)
+	// 发送请求（带 5xx 与网络错误重试）
+	const maxHTTPRetries = 3
+	var lastErr error
+
+	for attempt := 1; attempt <= maxHTTPRetries; attempt++ {
+		// 每次重试都重新构建请求（因为 Body 是一次性的 Reader）
+		var bodyReader io.Reader
+		if len(req.TaskBody) > 0 {
+			bodyReader = bytes.NewReader(req.TaskBody)
+		}
+
+		httpReq, err := http.NewRequest(method, requestURL, bodyReader)
+		if err != nil {
+			return nil, 0, fmt.Errorf("创建 HTTP 请求失败: %w", err)
+		}
+
+		// 设置 Host 头为域名（用于 SNI 和 Host 头）
+		httpReq.Host = hostName
+		httpReq.Header.Set("Host", hostName)
+
+		// 设置请求头
+		if bodyReader != nil {
+			httpReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(req.TaskBody)))
+		}
+
+		resp, err := conn.RoundTrip(httpReq)
+		if err != nil {
+			lastErr = err
+			if attempt < maxHTTPRetries {
+				s.logger.Warn("HTTP 请求失败(第 %d 次，将重试): %v", attempt, err)
+				time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+				continue
+			}
+			return nil, 0, fmt.Errorf("HTTP 请求失败(重试 %d 次后仍失败): %w", attempt, err)
+		}
+
+		// 成功拿到响应，读取响应体
+		responseBody, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			if attempt < maxHTTPRetries {
+				s.logger.Warn("读取响应体失败(第 %d 次，将重试): %v", attempt, readErr)
+				time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+				continue
+			}
+			return nil, 0, fmt.Errorf("读取响应体失败(重试 %d 次后仍失败): %w", attempt, readErr)
+		}
+
+		// 对 5xx 做有限次重试
+		if resp.StatusCode >= 500 && resp.StatusCode < 600 && attempt < maxHTTPRetries {
+			s.logger.Warn("后端返回状态码 %d (第 %d 次)，将重试，请求URL=%s", resp.StatusCode, attempt, requestURL)
+			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+			continue
+		}
+
+		// 正常返回
+		return responseBody, int32(resp.StatusCode), nil
 	}
 
-	httpReq, err := http.NewRequest(method, requestURL, bodyReader)
-	if err != nil {
-		return nil, 0, fmt.Errorf("创建 HTTP 请求失败: %w", err)
-	}
-
-	// 设置 Host 头为域名（用于 SNI 和 Host 头）
-	httpReq.Host = hostName
-	httpReq.Header.Set("Host", hostName)
-
-	// 设置请求头
-	if bodyReader != nil {
-		httpReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(req.TaskBody)))
-	}
-
-	// 发送请求
-	requestStart := time.Now()
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, 0, fmt.Errorf("HTTP 请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-	requestTime := time.Since(requestStart)
-
-	// 读取响应体
-	readStart := time.Now()
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, 0, fmt.Errorf("读取响应体失败: %w", err)
-	}
-	readTime := time.Since(readStart)
-
-	totalTime := time.Since(totalStart)
-
-	// 性能日志（仅在总时间超过阈值时输出详细信息）
-	if totalTime > 2*time.Second {
-		s.logger.Debug("⏱️ 任务执行性能分析 (数据类型: %s, 路径: %s):", dataType, path)
-		s.logger.Debug("  获取连接: %v", connTime)
-		s.logger.Debug("  构建URL: %v", time.Since(buildURLStart))
-		s.logger.Debug("  HTTP请求: %v", requestTime)
-		s.logger.Debug("  读取响应: %v (大小: %d 字节)", readTime, len(responseBody))
-		s.logger.Debug("  总耗时: %v", totalTime)
-	}
-
-	return responseBody, int32(resp.StatusCode), nil
+	// 理论上不会走到这里，如果走到这里，返回最后一次错误
+	return nil, 0, fmt.Errorf("HTTP 请求失败: %v", lastErr)
 }
 
 // SubmitTask 提交任务请求
@@ -557,11 +582,11 @@ func (s *Server) SubmitTask(ctx context.Context, req *tasksmanager.TaskRequest) 
 
 	s.taskLengthMu.Lock()
 	s.totalTaskLength += taskLength
-	totalLength := s.totalTaskLength
+	//totalLength := s.totalTaskLength
 	s.taskLengthMu.Unlock()
 
-	s.logger.Debug("收到任务请求: %s, 类型: %v, TileKey: %s, epoch: %d, 任务长度: %d 字节, 累计总长度: %d 字节 (%s)",
-		taskID, req.TaskType, tileKey, epoch, taskLength, totalLength, formatBytes(totalLength))
+	//s.logger.Debug("收到任务请求: %s, 类型: %v, TileKey: %s, epoch: %d, 任务长度: %d 字节, 累计总长度: %d 字节 (%s)",
+	//	taskID, req.TaskType, tileKey, epoch, taskLength, totalLength, formatBytes(totalLength))
 
 	// 构建路径（不包含域名，只返回路径部分）
 	dataType, hostName, path, err := s.buildPathForTask(req.TaskType, tileKey, epoch, imageryEpoch)
@@ -569,7 +594,7 @@ func (s *Server) SubmitTask(ctx context.Context, req *tasksmanager.TaskRequest) 
 		return nil, fmt.Errorf("构建路径失败: %w", err)
 	}
 
-	s.logger.Debug("任务 %s 构建的路径: %s (数据类型: %s, 主机名: %s)", taskID, path, dataType, hostName)
+	//s.logger.Debug("任务 %s 构建的路径: %s (数据类型: %s, 主机名: %s)", taskID, path, dataType, hostName)
 
 	// 使用热连接池执行任务（通过主机名获取连接，使用 IP 地址直接访问）
 	responseBody, statusCode, err := s.executeTaskWithHotPool(dataType, hostName, path, req)
@@ -586,7 +611,7 @@ func (s *Server) SubmitTask(ctx context.Context, req *tasksmanager.TaskRequest) 
 		}, nil
 	}
 
-	s.logger.Debug("任务 %s 执行成功，状态码: %d, 响应体长度: %d 字节", taskID, statusCode, len(responseBody))
+	//s.logger.Debug("任务 %s 执行成功，状态码: %d, 响应体长度: %d 字节", taskID, statusCode, len(responseBody))
 
 	// 构建响应
 	response := &tasksmanager.TaskResponse{

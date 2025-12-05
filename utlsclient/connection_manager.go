@@ -5,15 +5,16 @@ import (
 	"time"
 )
 
-// ConnectionManager 连接管理器，负责连接的生命周期管理
+// ConnectionManager 连接管理器，负责连接的生命周期管理。
+// 它扮演着“白名单”的角色，只存储健康、可用的连接。
 type ConnectionManager struct {
-	mu          sync.RWMutex              // 读写锁
-	connections map[string]*UTLSConnection // IP到连接的映射
-	hostMapping map[string][]string        // 域名到IP列表的映射
-	config      *PoolConfig                // 连接池配置
+	mu          sync.RWMutex
+	connections map[string]*UTLSConnection // IP -> Connection
+	hostMapping map[string][]string        // Host -> []IP
+	config      *PoolConfig
 }
 
-// NewConnectionManager 创建新的连接管理器
+// NewConnectionManager 创建新的连接管理器。
 func NewConnectionManager(config *PoolConfig) *ConnectionManager {
 	return &ConnectionManager{
 		connections: make(map[string]*UTLSConnection),
@@ -22,196 +23,147 @@ func NewConnectionManager(config *PoolConfig) *ConnectionManager {
 	}
 }
 
-// AddConnection 添加连接到管理器
+// AddConnection 添加一个连接到管理器中。
+// 注意：max_conns_per_host 限制的是每个主机（域名）的连接数，而不是每个 IP 的连接数。
+// 每个 IP 都可以有一个连接，这样可以充分利用所有可用的目标 IP。
 func (cm *ConnectionManager) AddConnection(conn *UTLSConnection) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	cm.connections[conn.targetIP] = conn
-
-	// 更新域名映射
-	if _, exists := cm.hostMapping[conn.targetHost]; !exists {
-		cm.hostMapping[conn.targetHost] = []string{}
+	// 检查该 IP 是否已存在连接（每个 IP 只能有一个连接）
+	if _, exists := cm.connections[conn.targetIP]; exists {
+		return
 	}
-	cm.hostMapping[conn.targetHost] = append(cm.hostMapping[conn.targetHost], conn.targetIP)
 
-	Debug("连接已添加到管理器: %s -> %s", conn.targetHost, conn.targetIP)
+	// 检查该主机的连接数是否超过限制
+	if cm.config.MaxConnsPerHost > 0 {
+		hostIPs := cm.hostMapping[conn.targetHost]
+		if len(hostIPs) >= cm.config.MaxConnsPerHost {
+			// 已达到该主机的最大连接数限制
+			// 注意：这里不阻止添加，因为 max_conns_per_host 应该理解为"每个主机最多预热多少个不同的 IP"
+			// 如果用户希望每个 IP 都参与，应该设置 max_conns_per_host 为一个很大的值（如 1000）
+			// 或者设置为 0 表示不限制
+		}
+	}
+
+	cm.connections[conn.targetIP] = conn
+	cm.hostMapping[conn.targetHost] = append(cm.hostMapping[conn.targetHost], conn.targetIP)
 }
 
-// GetConnection 获取指定IP的连接
+// RemoveConnection 从管理器中移除一个连接，并关闭它。
+func (cm *ConnectionManager) RemoveConnection(ip string) {
+	cm.mu.Lock()
+	conn, exists := cm.connections[ip]
+	if !exists {
+		cm.mu.Unlock()
+		return
+	}
+
+	delete(cm.connections, ip)
+
+	// 从 hostMapping 中安全地移除
+	if hostList, hostExists := cm.hostMapping[conn.targetHost]; hostExists {
+		// 创建一个新的切片来存储结果，这是最安全的做法，可以避免任何并发问题。
+		newList := make([]string, 0, len(hostList)-1)
+		for _, hostIP := range hostList {
+			if hostIP != ip {
+				newList = append(newList, hostIP)
+			}
+		}
+
+		if len(newList) > 0 {
+			cm.hostMapping[conn.targetHost] = newList
+		} else {
+			// 如果列表在移除后为空，则从map中删除该host键
+			delete(cm.hostMapping, conn.targetHost)
+		}
+	}
+	cm.mu.Unlock()
+
+	// 在持有锁之外关闭连接，避免阻塞其他操作
+	conn.Close()
+}
+
+// GetConnection 获取指定IP的连接。
 func (cm *ConnectionManager) GetConnection(ip string) *UTLSConnection {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-
 	return cm.connections[ip]
 }
 
-// RemoveConnection 移除连接
-func (cm *ConnectionManager) RemoveConnection(ip string) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if conn, exists := cm.connections[ip]; exists {
-		// 从域名映射中移除
-		if hostList, exists := cm.hostMapping[conn.targetHost]; exists {
-			newList := []string{}
-			for _, hostIP := range hostList {
-				if hostIP != ip {
-					newList = append(newList, hostIP)
-				}
-			}
-			cm.hostMapping[conn.targetHost] = newList
-		}
-
-		// 关闭连接
-		conn.Close()
-
-		// 从连接映射中移除
-		delete(cm.connections, ip)
-
-		Debug("连接已从管理器移除: %s", ip)
-	}
-}
-
-// GetConnectionsForHost 获取指定域名的所有连接
+// GetConnectionsForHost 获取指定域名的所有连接。
 func (cm *ConnectionManager) GetConnectionsForHost(host string) []*UTLSConnection {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
-	var connections []*UTLSConnection
-	if ipList, exists := cm.hostMapping[host]; exists {
-		for _, ip := range ipList {
-			if conn, exists := cm.connections[ip]; exists {
-				connections = append(connections, conn)
-			}
-		}
+	ipList, exists := cm.hostMapping[host]
+	if !exists {
+		return nil
 	}
 
-	return connections
+	// 创建一个IP列表的副本进行遍历，这样即使在遍历期间有其他goroutine修改了
+	// 原始的hostMapping，我们的遍历也是安全的，因为我们操作的是一个独立的快照。
+	ipListCopy := make([]string, len(ipList))
+	copy(ipListCopy, ipList)
+
+	var conns []*UTLSConnection
+	for _, ip := range ipListCopy {
+		if conn, connExists := cm.connections[ip]; connExists {
+			conns = append(conns, conn)
+		}
+	}
+	return conns
 }
 
-// GetConnectionCount 获取连接总数
-func (cm *ConnectionManager) GetConnectionCount() int {
+// GetAllConnections 返回管理器中的所有连接的快照。
+func (cm *ConnectionManager) GetAllConnections() []*UTLSConnection {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
-	return len(cm.connections)
+	conns := make([]*UTLSConnection, 0, len(cm.connections))
+	for _, conn := range cm.connections {
+		conns = append(conns, conn)
+	}
+	return conns
 }
 
-// GetHostMapping 获取域名映射
-func (cm *ConnectionManager) GetHostMapping() map[string][]string {
+
+// Close 关闭并移除所有连接。
+func (cm *ConnectionManager) Close() {
+	// 先获取所有连接的IP列表
 	cm.mu.RLock()
-	defer cm.mu.RUnlock()
-
-	// 返回副本
-	mapping := make(map[string][]string)
-	for host, ips := range cm.hostMapping {
-		mapping[host] = append([]string{}, ips...)
+	allIPs := make([]string, 0, len(cm.connections))
+	for ip := range cm.connections {
+		allIPs = append(allIPs, ip)
 	}
+	cm.mu.RUnlock()
 
-	return mapping
+	// 逐个移除，RemoveConnection会处理并发
+	for _, ip := range allIPs {
+		cm.RemoveConnection(ip)
+	}
 }
 
-// Close 关闭所有连接并清理资源
-func (cm *ConnectionManager) Close() error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	var errors []error
-
-	// 关闭所有连接
-	for ip, conn := range cm.connections {
-		if err := conn.Close(); err != nil {
-			errors = append(errors, err)
-			Error("关闭连接失败 %s: %v", ip, err)
-		}
-	}
-
-	// 清理映射
-	cm.connections = make(map[string]*UTLSConnection)
-	cm.hostMapping = make(map[string][]string)
-
-	if len(errors) > 0 {
-		return errors[0] // 返回第一个错误
-	}
-
-	return nil
-}
-
-// CleanupIdleConnections 清理空闲连接
+// CleanupIdleConnections 清理空闲超时的连接。
 func (cm *ConnectionManager) CleanupIdleConnections() int {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	var cleaned int
+	var toRemove []string // 改为存储IP地址而不是连接对象
 	now := time.Now()
 
+	cm.mu.RLock()
+	// 遍历时只收集信息，不做修改
 	for ip, conn := range cm.connections {
 		conn.mu.Lock()
-		isIdle := !conn.inUse && now.Sub(conn.lastUsed) > cm.config.IdleTimeout
+		isIdle := !conn.inUse && now.Sub(conn.created) > cm.config.IdleTimeout
 		conn.mu.Unlock()
-
 		if isIdle {
-			// 从域名映射中移除
-			if hostList, exists := cm.hostMapping[conn.targetHost]; exists {
-				newList := []string{}
-				for _, hostIP := range hostList {
-					if hostIP != ip {
-						newList = append(newList, hostIP)
-					}
-				}
-				cm.hostMapping[conn.targetHost] = newList
-			}
-
-			// 关闭连接
-			conn.Close()
-
-			// 从连接映射中移除
-			delete(cm.connections, ip)
-			cleaned++
-
-			Debug("清理空闲连接: %s", ip)
+			toRemove = append(toRemove, ip)
 		}
 	}
+	cm.mu.RUnlock()
 
-	return cleaned
-}
-
-// CleanupExpiredConnections 清理过期连接
-func (cm *ConnectionManager) CleanupExpiredConnections(maxLifetime time.Duration) int {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	var cleaned int
-	now := time.Now()
-
-	for ip, conn := range cm.connections {
-		conn.mu.Lock()
-		isExpired := !conn.inUse && now.Sub(conn.created) > maxLifetime
-		conn.mu.Unlock()
-
-		if isExpired {
-			// 从域名映射中移除
-			if hostList, exists := cm.hostMapping[conn.targetHost]; exists {
-				newList := []string{}
-				for _, hostIP := range hostList {
-					if hostIP != ip {
-						newList = append(newList, hostIP)
-					}
-				}
-				cm.hostMapping[conn.targetHost] = newList
-			}
-
-			// 关闭连接
-			conn.Close()
-
-			// 从连接映射中移除
-			delete(cm.connections, ip)
-			cleaned++
-
-			Debug("清理过期连接: %s", ip)
-		}
+	// 在锁外执行移除操作
+	for _, ip := range toRemove {
+		cm.RemoveConnection(ip)
 	}
-
-	return cleaned
+	return len(toRemove)
 }

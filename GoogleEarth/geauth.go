@@ -1,96 +1,13 @@
 package GoogleEarth
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"math/rand/v2"
-	"net/http"
-	"time"
-
-	"crawler-platform/utlsclient"
 )
 
 // Auth Google Earth 认证管理器
 type Auth struct {
-	pool    *utlsclient.UTLSHotConnPool
 	Session string // 认证会话 ID（从 Cookie 中提取的 sessionid）
-}
-
-// NewAuth 创建新的认证管理器实例
-func NewAuth(pool *utlsclient.UTLSHotConnPool) *Auth {
-	return &Auth{
-		pool: pool,
-	}
-}
-
-// GetAuth 获取 Google Earth 认证 Session
-// 功能：
-// 1. 建立热连接到 kh.google.com
-// 2. 发送 POST 请求到 /geauth
-// 3. 从响应 Cookie 中提取 sessionid
-// 4. 将 sessionid 保存到热连接中，后续请求自动携带
-func (a *Auth) GetAuth() (string, error) {
-	// 确保 pool 已初始化
-	if a.pool == nil {
-		return "", fmt.Errorf("pool 未初始化，请使用 NewAuth(pool) 创建")
-	}
-
-	// 1. 从连接池获取热连接
-	conn, err := a.pool.GetConnection(HOST_NAME)
-	if err != nil {
-		return "", fmt.Errorf("获取热连接失败: %w", err)
-	}
-	defer a.pool.PutConnection(conn)
-
-	// 2. 使用连接的 IP 地址构建 URL（而不是域名）
-	url := "https://" + HOST_NAME + "/geauth"
-
-	// 生成随机认证密钥（49字节）
-	authKey := generateRandomAuthKey()
-
-	// 2. 创建 HTTP 客户端
-	client := utlsclient.NewUTLSClient(conn)
-	client.SetTimeout(30 * time.Second)
-
-	// 3. 创建 POST 请求
-	req, err := http.NewRequest("POST", url, bytes.NewReader(authKey))
-	if err != nil {
-		return "", fmt.Errorf("创建请求失败: %w", err)
-	}
-
-	// 4. 设置请求头
-	req.Header.Set("Content-Length", fmt.Sprintf("%d", len(authKey)))
-	// req.Header.Set("User-Agent", RandomUserAgent()) // 使用随机 User-Agent
-	req.Header.Set("Host", HOST_NAME) // 设置 Host header 为域名（因为使用 IP 访问）
-
-	// 5. 发送请求
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("认证请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// 6. 检查响应状态
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("认证失败，状态码: %d", resp.StatusCode)
-	}
-
-	// 7. 读取响应 body
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("读取响应 body 失败: %w", err)
-	}
-
-	// 8. 从响应 body 中解析 sessionid
-	session, err := parseSessionFromResponse(responseBody)
-	if err != nil {
-		return "", fmt.Errorf("从 body 解析 sessionid 失败: %w", err)
-	}
-
-	// 9. 保存 session
-	a.Session = session
-	return session, nil
 }
 
 // ClearAuth 清除当前的认证会话信息
@@ -103,10 +20,10 @@ func (a *Auth) GetSession() string {
 	return a.Session
 }
 
-// parseSessionFromResponse 从响应 body 中解析 sessionid
+// ParseSessionFromResponse parseSessionFromResponse 从响应 body 中解析 sessionid
 // 响应格式：前 8 字节为头部，之后是以 NULL 结尾的 sessionid 字符串
 // 这个 sessionid 会被保存到热连接中，后续所有请求都会自动携带
-func parseSessionFromResponse(responseBody []byte) (string, error) {
+func ParseSessionFromResponse(responseBody []byte) (string, error) {
 	if len(responseBody) <= 8 {
 		return "", fmt.Errorf("响应 body 长度不足，实际长度为 %d 字节", len(responseBody))
 	}
@@ -153,14 +70,6 @@ var (
 	}
 )
 
-// generateRandomAuthKey 生成随机的认证密钥（49字节）
-// 从预定义的三个密钥中随机选择一个
-func generateRandomAuthKey() []byte {
-	// 从三个预定义密钥中随机选择
-	keys := [][]byte{GEAUTH1, GEAUTH2, GEAUTH3}
-	return keys[rand.IntN(len(keys))]
-}
-
 // GenerateRandomGeAuth 生成指定版本的认证密钥（用于测试和自定义）
 // version: 版本号（0x01-0xFF）
 //   - 如果 version = 0，从预定义密钥中随机选择一个
@@ -185,15 +94,22 @@ func GenerateRandomGeAuth(version byte) ([]byte, error) {
 		return GEAUTH1, nil // GEAUTH1 的版本是 0x03
 	}
 
-	// 其他版本号：生成随机密钥
-	header := []byte{0x01, 0x00, 0x00, 0x00}
-	data := make([]byte, 44)
+	// 其他版本号：根据预定义密钥的规律生成新的密钥
+	// 分析规律：
+	// 1. 前5字节固定格式：[version, 0x00, 0x00, 0x00, 0x02]
+	// 2. GEAUTH1和GEAUTH2的前16字节（索引5-15）相同，但GEAUTH3不同
+	// 3. GEAUTH1是48字节（包含"GoogleEarthWin.exe\0"），GEAUTH2和GEAUTH3是49字节
+	// 4. 从索引16开始的数据是随机的，但需要保持合理的分布
 
-	// 生成随机数据
+	header := []byte{version, 0x00, 0x00, 0x00, 0x02}
+
+	// 生成随机数据部分（44字节）
+	// 为了保持与预定义密钥类似的特性，我们生成完全随机的数据
+	data := make([]byte, 44)
 	for i := range data {
 		data[i] = byte(rand.IntN(256))
 	}
 
-	// 组合：header(4) + version(1) + randomData(44) = 49字节
-	return append(append(header, version), data...), nil
+	// 组合：header(5) + randomData(44) = 49字节
+	return append(header, data...), nil
 }
