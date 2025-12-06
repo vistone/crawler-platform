@@ -107,10 +107,10 @@ func main() {
 				log.Printf("设置本地IP池目标数量: %d", config.LocalIPPool.TargetIPCount)
 				localIPPool.SetTargetIPCount(config.LocalIPPool.TargetIPCount)
 
-				// 等待IPv6地址池准备就绪
+				// 等待IPv6地址池准备就绪（在goroutine中异步执行，不阻塞主线程）
 				// SetTargetIPCount 会立即批量创建地址，但创建需要时间，需要等待地址创建完成
 				log.Printf("等待IPv6地址池准备就绪（目标数量: %d）...", config.LocalIPPool.TargetIPCount)
-				waitForIPPoolReady(localIPPool, config.LocalIPPool.TargetIPCount)
+				go waitForIPPoolReady(localIPPool, config.LocalIPPool.TargetIPCount)
 			}
 			// 将 IP 池设置到 Server 中
 			ipPoolWrapper := &ipPoolWrapper{pool: localIPPool}
@@ -363,8 +363,11 @@ func waitForIPPoolReady(pool localippool.IPPool, targetCount int) {
 	}
 
 	// 先等待一段时间，让SetTargetIPCount中的批量创建完成
+	// 使用短时间的多次sleep，避免长时间阻塞（虽然现在在goroutine中）
 	log.Printf("等待IPv6地址创建完成...")
-	time.Sleep(initialWait)
+	for i := 0; i < 4; i++ {
+		time.Sleep(500 * time.Millisecond)
+	}
 
 	// 需要同时满足以下条件才算就绪：
 	// 1. 能连续多次成功获取到IP（至少连续5次）
@@ -427,6 +430,8 @@ func waitForIPPoolReady(pool localippool.IPPool, targetCount int) {
 			return
 		}
 
+		// 使用可中断的 sleep，但这里使用简单的方式
+		// 由于函数现在在goroutine中运行，不会阻塞主线程
 		time.Sleep(interval)
 	}
 }
