@@ -466,11 +466,11 @@ func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *ta
 
 	// 发送请求（带 5xx 与网络错误重试）
 	// 增加重试次数，确保连接有时间恢复
-	const maxHTTPRetries = 10
+	const maxHTTPRetries = 1
 	var lastErr error
 	var conn *utlsclient.UTLSConnection
 
-		for attempt := 1; attempt <= maxHTTPRetries; attempt++ {
+	for attempt := 1; attempt <= maxHTTPRetries; attempt++ {
 		// 每次重试都获取新连接（如果连接已标记为不健康，会获取新连接）
 		connStart := time.Now()
 		newConn, err := s.utlsClient.GetConnectionForHost(hostName)
@@ -528,9 +528,20 @@ func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *ta
 			httpReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(req.TaskBody)))
 		}
 
+		// 记录请求开始时间和连接信息
+		requestStart := time.Now()
+		localIP := conn.LocalIP()
+		remoteIP := conn.TargetIP()
+
 		resp, err := conn.RoundTrip(httpReq)
 		if err != nil {
 			lastErr = err
+			// 请求失败，记录日志
+			requestDuration := time.Since(requestStart)
+			requestCount := conn.RequestCount()
+			s.logger.Warn("[任务请求失败] 本地IPv6=%s, 远程IPv6=%s, 已完成请求数=%d, 耗时=%v, 错误=%v",
+				getIPDisplay(localIP), getIPDisplay(remoteIP), requestCount, requestDuration, err)
+
 			// 优化等待时间：使用指数退避，但限制最大等待时间
 			// 对于连接问题，等待时间不要太长，避免请求超时
 			waitTime := time.Duration(attempt) * 200 * time.Millisecond
@@ -555,6 +566,12 @@ func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *ta
 			s.utlsClient.ReleaseConnection(conn)
 			return nil, 0, fmt.Errorf("HTTP 请求失败(重试 %d 次后仍失败): %w", attempt, err)
 		}
+
+		// 请求成功，记录详细日志
+		requestDuration := time.Since(requestStart)
+		requestCount := conn.RequestCount()
+		s.logger.Info("[任务请求成功] 本地IPv6=%s, 远程IPv6=%s, 已完成请求数=%d, 耗时=%v, 状态码=%d, 路径=%s",
+			getIPDisplay(localIP), getIPDisplay(remoteIP), requestCount, requestDuration, resp.StatusCode, path)
 
 		// 请求成功，释放连接并返回
 		s.utlsClient.ReleaseConnection(conn)
@@ -641,7 +658,7 @@ func (s *Server) SubmitTask(ctx context.Context, req *tasksmanager.TaskRequest) 
 			strings.Contains(errStr, "connection closed") ||
 			strings.Contains(errStr, "broken pipe") ||
 			strings.Contains(errStr, "连接已标记为不健康")
-		
+
 		if isConnectionError {
 			// 连接问题，不应该返回 500，应该继续重试
 			// 但这里已经重试了 10 次，说明连接池可能有问题
@@ -657,7 +674,7 @@ func (s *Server) SubmitTask(ctx context.Context, req *tasksmanager.TaskRequest) 
 				TaskResponseStatusCode: &errorStatusCode,
 			}, nil
 		}
-		
+
 		// 其他错误（如配置错误），返回 500
 		s.logger.Warn("任务执行失败: %s, 错误: %v", taskID, err)
 		errorStatusCode := int32(500)
@@ -1262,4 +1279,12 @@ func formatBytes(bytes int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.2f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// getIPDisplay 格式化IP地址显示（如果为空则显示为"系统默认"）
+func getIPDisplay(ip string) string {
+	if ip == "" {
+		return "系统默认"
+	}
+	return ip
 }

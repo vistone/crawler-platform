@@ -79,9 +79,24 @@ func main() {
 		srv.SetBootstrapNodes(config.Server.Bootstrap)
 	}
 
-	// 初始化并启动本地 IP 池（如果启用）
+	// 初始化并启动本地 IP 池
+	// 如果配置启用，或配置了IPv6子网（即使enable=false），则创建本地IP池
+	// localippool 包内置了完整的自动检测和管理功能，包括：
+	// - 自动检测 IPv6 子网（如果 ipv6SubnetCIDR 为空）
+	// - 自动创建、删除、管理 IPv6 地址
+	// - 自动实现地址轮流使用
 	var localIPPool localippool.IPPool
-	if config.LocalIPPool.Enable {
+	shouldEnableLocalIPPool := config.LocalIPPool.Enable
+
+	// 如果配置未启用，但配置了IPv6子网，自动启用本地IP池
+	if !shouldEnableLocalIPPool && config.LocalIPPool.IPv6SubnetCIDR != "" {
+		log.Printf("检测到IPv6子网配置，将自动启用本地IP池")
+		shouldEnableLocalIPPool = true
+	}
+
+	if shouldEnableLocalIPPool {
+		// 直接使用 localippool.NewLocalIPPool，它内置了所有自动检测和管理功能
+		// 如果 ipv6SubnetCIDR 为空，会自动检测可用的IPv6子网并启用IPv6池
 		localIPPool, err = localippool.NewLocalIPPool(config.LocalIPPool.StaticIPv4s, config.LocalIPPool.IPv6SubnetCIDR)
 		if err != nil {
 			log.Printf("错误: 创建本地 IP 池失败: %v", err)
@@ -89,13 +104,23 @@ func main() {
 		} else {
 			// 如果配置了目标 IP 数量，设置它
 			if config.LocalIPPool.TargetIPCount > 0 {
+				log.Printf("设置本地IP池目标数量: %d", config.LocalIPPool.TargetIPCount)
 				localIPPool.SetTargetIPCount(config.LocalIPPool.TargetIPCount)
+
+				// 等待IPv6地址池准备就绪
+				// SetTargetIPCount 会立即批量创建地址，但创建需要时间，需要等待地址创建完成
+				log.Printf("等待IPv6地址池准备就绪（目标数量: %d）...", config.LocalIPPool.TargetIPCount)
+				waitForIPPoolReady(localIPPool, config.LocalIPPool.TargetIPCount)
 			}
 			// 将 IP 池设置到 Server 中
-			if localIPPool.GetIP() != nil {
-				// 创建一个包装器以匹配 Server 的 IPPoolInterface
-				ipPoolWrapper := &ipPoolWrapper{pool: localIPPool}
-				logger.Info("已设置 IP 池", "ip_pool", ipPoolWrapper.GetIP())
+			ipPoolWrapper := &ipPoolWrapper{pool: localIPPool}
+			testIP := ipPoolWrapper.GetIP()
+			if testIP != nil {
+				log.Printf("已设置本地 IP 池，测试IP: %s (IPv6: %v)", testIP.String(), testIP.To4() == nil)
+				srv.SetIPPool(ipPoolWrapper)
+			} else {
+				// 即使GetIP返回nil（隧道模式），也设置IP池
+				log.Printf("已设置本地 IP 池（隧道模式，由系统自动选择路由）")
 				srv.SetIPPool(ipPoolWrapper)
 			}
 		}
@@ -321,6 +346,88 @@ func main() {
 	case <-shutdownCtx.Done():
 		log.Println("警告: 关闭超时，强制退出")
 		os.Exit(1)
+	}
+}
+
+// waitForIPPoolReady 等待IPv6地址池准备就绪
+// 通过尝试获取IP地址来验证地址池是否已准备好
+func waitForIPPoolReady(pool localippool.IPPool, targetCount int) {
+	const maxWait = 60 * time.Second
+	const initialWait = 2 * time.Second // 初始等待时间，让批量创建完成
+	const interval = 500 * time.Millisecond
+	start := time.Now()
+
+	// 如果不支持动态池，不需要等待
+	if !pool.SupportsDynamicPool() {
+		return
+	}
+
+	// 先等待一段时间，让SetTargetIPCount中的批量创建完成
+	log.Printf("等待IPv6地址创建完成...")
+	time.Sleep(initialWait)
+
+	// 需要同时满足以下条件才算就绪：
+	// 1. 能连续多次成功获取到IP（至少连续5次）
+	// 2. 获取到的IP都是IPv6地址
+	// 3. 每次获取后立即释放，确保有足够的地址可用
+	successCount := 0
+	requiredSuccess := 5   // 连续5次成功获取IP才算就绪
+	requiredIPv6Count := 3 // 至少要有3个不同的IPv6地址可用
+	collectedIPs := make(map[string]bool)
+
+	for {
+		// 尝试获取IP
+		ip := pool.GetIP()
+		if ip != nil {
+			// 检查是否是IPv6地址
+			if ip.To4() == nil {
+				// 是IPv6地址
+				successCount++
+				ipStr := ip.String()
+				collectedIPs[ipStr] = true
+
+				// 立即释放IP，避免占用
+				pool.MarkIPUnused(ip)
+
+				// 检查是否满足就绪条件
+				if successCount >= requiredSuccess && len(collectedIPs) >= requiredIPv6Count {
+					// 连续多次成功，且有足够的IPv6地址可用，说明地址池已就绪
+					elapsed := time.Since(start)
+					log.Printf("IPv6地址池已准备就绪（耗时: %v，目标数量: %d，已验证可用IPv6地址: %d）",
+						elapsed, targetCount, len(collectedIPs))
+					return
+				}
+			} else {
+				// 获取到的是IPv4地址，但不是我们需要的，释放它
+				pool.MarkIPUnused(ip)
+				// IPv4地址不计入成功计数
+			}
+		} else {
+			// 获取失败，重置计数
+			if successCount > 0 {
+				log.Printf("IPv6地址池准备中: 获取IP失败，重置计数（之前成功: %d次，已验证地址: %d个）",
+					successCount, len(collectedIPs))
+			}
+			successCount = 0
+			collectedIPs = make(map[string]bool) // 重置收集的IP
+		}
+
+		// 定期输出进度信息
+		elapsed := time.Since(start)
+		if elapsed > 10*time.Second && elapsed%10*time.Second < interval {
+			log.Printf("IPv6地址池准备中: 已等待 %v，成功获取: %d次，已验证地址: %d个",
+				elapsed.Round(time.Second), successCount, len(collectedIPs))
+		}
+
+		// 检查超时
+		if elapsed > maxWait {
+			log.Printf("警告: 等待IPv6地址池准备就绪超时（%v），将继续启动但地址池可能未完全就绪（已验证: %d个IPv6地址）",
+				maxWait, len(collectedIPs))
+			log.Printf("提示: 如果地址池未就绪，可能是IPv6接口配置问题或权限不足，将使用系统默认地址")
+			return
+		}
+
+		time.Sleep(interval)
 	}
 }
 

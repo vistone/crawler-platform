@@ -3,6 +3,7 @@ package utlsclient
 import (
 	"fmt"
 	"math/rand"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -153,7 +154,7 @@ func (c *Client) GetConnectionForHost(host string) (*UTLSConnection, error) {
 	for i := 0; i < n; i++ {
 		idx := (start + i) % n
 		conn := connections[idx]
-		projlogger.Info("获取热连接索引 %d，ip是 %s，已经完成请求数: %d", idx, conn.TargetIP(), conn.requestCount)
+		//projlogger.Info("获取热连接索引 %d，ip是 %s，已经完成请求数: %d", idx, conn.TargetIP(), conn.requestCount)
 		if conn.TryAcquire() {
 			return conn, nil
 		}
@@ -172,6 +173,7 @@ func (c *Client) ReleaseConnection(conn *UTLSConnection) {
 	conn.mu.Lock()
 	isHealthy := conn.healthy
 	targetIP := conn.targetIP
+	localIPStr := conn.localIP
 	inUse := conn.inUse
 
 	// 如果连接不健康，触发快速健康检查恢复连接（不立即移除）
@@ -190,10 +192,16 @@ func (c *Client) ReleaseConnection(conn *UTLSConnection) {
 			// 连接已经被移除（可能是健康检查中确认了403），只记录调试日志
 			projlogger.Debug("连接 %s 已被移除（可能在健康检查中被移除）", targetIP)
 		}
-		// 即使连接不健康，也要释放 inUse 标志，允许其他操作
+		// 即使连接不健康，也要释放 inUse 标志和IP地址引用计数
 		conn.mu.Lock()
 		conn.inUse = false
 		conn.mu.Unlock()
+		// 释放本地IP地址的引用计数
+		if localIPStr != "" && c.config.LocalIPPool != nil {
+			if localIP := net.ParseIP(localIPStr); localIP != nil {
+				c.config.LocalIPPool.MarkIPUnused(localIP)
+			}
+		}
 		return
 	}
 
@@ -208,6 +216,13 @@ func (c *Client) ReleaseConnection(conn *UTLSConnection) {
 	// 释放连接
 	conn.inUse = false
 	conn.mu.Unlock()
+
+	// 释放本地IP地址的引用计数（支持引用计数，允许多个连接复用同一个IP）
+	if localIPStr != "" && c.config.LocalIPPool != nil {
+		if localIP := net.ParseIP(localIPStr); localIP != nil {
+			c.config.LocalIPPool.MarkIPUnused(localIP)
+		}
+	}
 }
 
 func (c *Client) maintenanceLoop() {

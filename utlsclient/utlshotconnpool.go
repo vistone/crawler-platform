@@ -71,6 +71,11 @@ func (c *UTLSConnection) LocalIP() string {
 	return c.localIP
 }
 
+// RequestCount 返回此连接已完成的请求总数。
+func (c *UTLSConnection) RequestCount() int64 {
+	return atomic.LoadInt64(&c.requestCount)
+}
+
 // IsHealthy 检查连接是否被标记为健康。
 func (c *UTLSConnection) IsHealthy() bool {
 	c.mu.Lock()
@@ -396,30 +401,18 @@ func establishConnection(ip, domain string, config *PoolConfig, on403 func(strin
 		targetIsIPv6 := strings.Contains(ip, ":")
 		var localIP net.IP
 
-		// 如果目标是 IPv6，优先获取 IPv6 本地地址（最多重试 5 次，确保获取到 IPv6）
+		// 如果目标是 IPv6，获取 IPv6 本地地址（支持引用计数复用，不需要重试）
 		if targetIsIPv6 {
-			maxRetries := 5
-			for retry := 0; retry < maxRetries; retry++ {
-				candidateIP := config.LocalIPPool.GetIP()
-				if candidateIP == nil {
-					// 地址池返回 nil，可能是地址池未准备好，短暂等待后重试
-					if retry < maxRetries-1 {
-						time.Sleep(20 * time.Millisecond)
-					}
-					continue
-				}
-				// 检查是否是 IPv6 地址
-				if candidateIP.To4() == nil {
-					localIP = candidateIP
-					break // 找到 IPv6 地址，停止重试
-				}
-				// 如果返回的是 IPv4，但目标是 IPv6，标记为未使用并重试
-				// 注意：这里不调用 ReleaseIP，因为可能影响地址池状态
-				// 而是继续重试，让地址池自己管理
-				if retry < maxRetries-1 {
-					time.Sleep(20 * time.Millisecond) // 短暂等待后重试
-				}
+			candidateIP := config.LocalIPPool.GetIP()
+			if candidateIP != nil && candidateIP.To4() == nil {
+				// 获取到 IPv6 地址，直接使用
+				localIP = candidateIP
+			} else if candidateIP != nil {
+				// 如果返回的是 IPv4，但目标是 IPv6，标记为未使用
+				config.LocalIPPool.MarkIPUnused(candidateIP)
+				// 不再重试，避免被认为是攻击行为
 			}
+			// 如果 candidateIP == nil，使用系统默认地址（不重试）
 		} else {
 			// 如果目标是 IPv4，获取本地 IP（可能是 IPv4 或 nil）
 			// 注意：如果本地 IP 池只支持 IPv6，这里会返回 nil，使用系统默认

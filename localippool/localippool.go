@@ -54,9 +54,9 @@ type LocalIPPool struct { // 定义LocalIPPool结构体，实现IPPool接口
 	// createdIPv6Addrs 存储已创建的IPv6地址，用于清理
 	createdIPv6Addrs map[string]bool // 已创建的IPv6地址映射
 	createdIPv6Mutex sync.RWMutex    // 保护已创建地址映射的互斥锁
-	// usedIPv6Addrs 存储正在使用的IPv6地址
-	usedIPv6Addrs map[string]bool // 正在使用的IPv6地址映射
-	usedIPv6Mutex sync.RWMutex    // 保护正在使用地址映射的互斥锁
+	// usedIPv6Addrs 存储正在使用的IPv6地址（使用引用计数，允许多个连接复用同一个IP）
+	usedIPv6Addrs map[string]int // 正在使用的IPv6地址映射（引用计数）
+	usedIPv6Mutex sync.RWMutex   // 保护正在使用地址映射的互斥锁
 	// activeIPv6Addrs 存储当前活跃的IPv6地址（已创建且在系统上）
 	activeIPv6Addrs map[string]bool // 活跃的IPv6地址映射
 	activeIPv6Mutex sync.RWMutex    // 保护活跃地址映射的互斥锁
@@ -158,15 +158,15 @@ func NewLocalIPPool(staticIPv4s []string, ipv6SubnetCIDR string) (IPPool, error)
 				finalIPv6Note = "GetIP()将返回nil，由操作系统自动选择出口IP"
 
 			} else {
-				pool.hasIPv6Support = true                       // 设置IPv6支持标志
-				pool.ipv6Subnet = subnet                         // 设置IPv6子网
-				pool.ipv6Queue = make(chan net.IP, 100)          // 预生成100个IPv6地址作为缓冲区。
-				pool.createdIPv6Addrs = make(map[string]bool)    // 初始化已创建地址映射
-				pool.usedIPv6Addrs = make(map[string]bool)       // 初始化正在使用地址映射
-				pool.activeIPv6Addrs = make(map[string]bool)     // 初始化活跃地址映射
-				pool.batchSize = 10                              // 默认批量操作大小：10个地址
-				pool.minActiveAddrs = 0                          // 最小活跃地址数（动态设置）
-				pool.maxActiveAddrs = 0                          // 最大活跃地址数（动态设置）
+				pool.hasIPv6Support = true                    // 设置IPv6支持标志
+				pool.ipv6Subnet = subnet                      // 设置IPv6子网
+				pool.ipv6Queue = make(chan net.IP, 100)       // 预生成100个IPv6地址作为缓冲区。
+				pool.createdIPv6Addrs = make(map[string]bool) // 初始化已创建地址映射
+				pool.usedIPv6Addrs = make(map[string]int)     // 初始化正在使用地址映射（引用计数）
+				pool.activeIPv6Addrs = make(map[string]bool)  // 初始化活跃地址映射
+				pool.batchSize = 10                           // 默认批量操作大小：10个地址
+				pool.minActiveAddrs = 0                       // 最小活跃地址数（动态设置）
+				pool.maxActiveAddrs = 0                       // 最大活跃地址数（动态设置）
 				// 检测IPv6接口名称
 				pool.ipv6Interface = detectIPv6Interface(subnet)
 				if pool.ipv6Interface == "" {
@@ -254,64 +254,62 @@ func (p *LocalIPPool) GetIP() net.IP { // 实现GetIP方法
 			return nil // 隧道模式：不绑定本地IP，让系统自动选择路由
 		}
 
-		// 优先从已创建的地址池中复用未使用的地址
+		// 优先从已创建的地址池中复用地址（支持引用计数，允许多个连接复用同一个IP）
 		p.activeIPv6Mutex.RLock()
-		p.usedIPv6Mutex.RLock()
-
-		// 找出未使用的活跃地址
+		activeAddrs := make([]string, 0, len(p.activeIPv6Addrs))
 		for addrStr := range p.activeIPv6Addrs {
-			if !p.usedIPv6Addrs[addrStr] {
-				ip := net.ParseIP(addrStr)
+			activeAddrs = append(activeAddrs, addrStr)
+		}
+		p.activeIPv6Mutex.RUnlock()
+
+		// 随机选择一个活跃地址（支持复用，不需要检查是否在使用）
+		if len(activeAddrs) > 0 {
+			// 选择引用计数最少的地址，实现负载均衡
+			p.usedIPv6Mutex.Lock()
+			minRefCount := -1
+			selectedAddr := ""
+			for _, addrStr := range activeAddrs {
+				refCount := p.usedIPv6Addrs[addrStr]
+				if minRefCount == -1 || refCount < minRefCount {
+					minRefCount = refCount
+					selectedAddr = addrStr
+				}
+			}
+			if selectedAddr != "" {
+				// 增加引用计数
+				p.usedIPv6Addrs[selectedAddr]++
+				p.usedIPv6Mutex.Unlock()
+
+				ip := net.ParseIP(selectedAddr)
 				if ip != nil {
-					p.usedIPv6Mutex.RUnlock()
-					p.activeIPv6Mutex.RUnlock()
-
-					// 标记地址为正在使用
-					p.usedIPv6Mutex.Lock()
-					p.usedIPv6Addrs[addrStr] = true
-					p.usedIPv6Mutex.Unlock()
-
 					return ip
 				}
+			} else {
+				p.usedIPv6Mutex.Unlock()
 			}
 		}
 
-		activeCount := len(p.activeIPv6Addrs)
-		p.usedIPv6Mutex.RUnlock()
-		p.activeIPv6Mutex.RUnlock()
+		activeCount := len(activeAddrs)
 
 		// 检查地址池是否已达到目标数量
 		p.mu.RLock()
 		minActive := p.minActiveAddrs
 		p.mu.RUnlock()
 
-		// 如果地址池已达到目标数量，等待地址空闲，而不是创建新地址
+		// 如果地址池已达到目标数量，直接复用现有地址（支持引用计数，不阻塞）
 		if minActive > 0 && activeCount >= minActive {
-			// 所有地址都在使用中，等待一段时间后重试（最多等待3次，避免无限等待）
-			// 如果多次重试后仍然没有可用地址，返回nil让系统自动选择
-			maxRetries := 3
-			for retry := 0; retry < maxRetries; retry++ {
-				time.Sleep(100 * time.Millisecond)
-				// 再次检查是否有可复用的地址
-				p.activeIPv6Mutex.RLock()
-				p.usedIPv6Mutex.RLock()
-				for addrStr := range p.activeIPv6Addrs {
-					if !p.usedIPv6Addrs[addrStr] {
-						ip := net.ParseIP(addrStr)
-						if ip != nil {
-							p.usedIPv6Mutex.RUnlock()
-							p.activeIPv6Mutex.RUnlock()
-							p.usedIPv6Mutex.Lock()
-							p.usedIPv6Addrs[addrStr] = true
-							p.usedIPv6Mutex.Unlock()
-							return ip
-						}
-					}
+			// 直接返回第一个可用地址，支持复用
+			if len(activeAddrs) > 0 {
+				selectedAddr := activeAddrs[0]
+				p.usedIPv6Mutex.Lock()
+				p.usedIPv6Addrs[selectedAddr]++
+				p.usedIPv6Mutex.Unlock()
+				ip := net.ParseIP(selectedAddr)
+				if ip != nil {
+					return ip
 				}
-				p.usedIPv6Mutex.RUnlock()
-				p.activeIPv6Mutex.RUnlock()
 			}
-			// 多次重试后仍然没有可用地址，返回nil让系统自动选择（避免阻塞）
+			// 如果没有活跃地址，返回nil让系统自动选择
 			return nil
 		}
 
@@ -336,29 +334,20 @@ func (p *LocalIPPool) GetIP() net.IP { // 实现GetIP方法
 				case p.ipv6Queue <- ip:
 				default:
 				}
-				// 尝试从活跃地址中复用（最多等待3次）
-				maxRetries := 3
-				for retry := 0; retry < maxRetries; retry++ {
-					time.Sleep(100 * time.Millisecond)
-					p.activeIPv6Mutex.RLock()
-					p.usedIPv6Mutex.RLock()
-					for addrStr := range p.activeIPv6Addrs {
-						if !p.usedIPv6Addrs[addrStr] {
-							reuseIP := net.ParseIP(addrStr)
-							if reuseIP != nil {
-								p.usedIPv6Mutex.RUnlock()
-								p.activeIPv6Mutex.RUnlock()
-								p.usedIPv6Mutex.Lock()
-								p.usedIPv6Addrs[addrStr] = true
-								p.usedIPv6Mutex.Unlock()
-								return reuseIP
-							}
-						}
+				// 直接从活跃地址中复用（不需要等待，支持引用计数）
+				p.activeIPv6Mutex.RLock()
+				for addrStr := range p.activeIPv6Addrs {
+					reuseIP := net.ParseIP(addrStr)
+					if reuseIP != nil {
+						p.activeIPv6Mutex.RUnlock()
+						p.usedIPv6Mutex.Lock()
+						p.usedIPv6Addrs[addrStr]++
+						p.usedIPv6Mutex.Unlock()
+						return reuseIP
 					}
-					p.usedIPv6Mutex.RUnlock()
-					p.activeIPv6Mutex.RUnlock()
 				}
-				// 多次重试后仍然没有可用地址，返回nil让系统自动选择（避免阻塞）
+				p.activeIPv6Mutex.RUnlock()
+				// 没有可用地址，返回nil让系统自动选择
 				return nil
 			}
 
@@ -392,9 +381,9 @@ func (p *LocalIPPool) GetIP() net.IP { // 实现GetIP方法
 				return p.GetIP()
 			}
 
-			// 标记地址为正在使用
+			// 标记地址为正在使用（增加引用计数）
 			p.usedIPv6Mutex.Lock()
-			p.usedIPv6Addrs[ipStr] = true
+			p.usedIPv6Addrs[ipStr]++
 			p.usedIPv6Mutex.Unlock()
 		}
 
@@ -953,13 +942,19 @@ func (p *LocalIPPool) ReleaseIP(ip net.IP) {
 
 	ipStr := ip.String()
 
-	// 检查是否正在使用
+	// 检查是否正在使用（检查引用计数）
 	p.usedIPv6Mutex.Lock()
-	isUsed := p.usedIPv6Addrs[ipStr]
-	delete(p.usedIPv6Addrs, ipStr)
-	p.usedIPv6Mutex.Unlock()
-
-	if !isUsed {
+	refCount := p.usedIPv6Addrs[ipStr]
+	if refCount > 0 {
+		// 减少引用计数，如果为0则删除
+		if refCount == 1 {
+			delete(p.usedIPv6Addrs, ipStr)
+		} else {
+			p.usedIPv6Addrs[ipStr] = refCount - 1
+		}
+		p.usedIPv6Mutex.Unlock()
+	} else {
+		p.usedIPv6Mutex.Unlock()
 		return // 地址未在使用中，无需释放
 	}
 
@@ -1007,7 +1002,7 @@ func (p *LocalIPPool) ReleaseIP(ip net.IP) {
 	p.activeIPv6Mutex.Unlock()
 }
 
-// MarkIPUnused 标记IPv6地址为未使用（不立即删除，等待定期清理）
+// MarkIPUnused 标记IPv6地址为未使用（减少引用计数，不立即删除，等待定期清理）
 func (p *LocalIPPool) MarkIPUnused(ip net.IP) {
 	if ip == nil {
 		return
@@ -1020,9 +1015,17 @@ func (p *LocalIPPool) MarkIPUnused(ip net.IP) {
 
 	ipStr := ip.String()
 
-	// 从正在使用的地址映射中移除，但不删除地址
+	// 减少引用计数（允许多个连接复用同一个IP）
 	p.usedIPv6Mutex.Lock()
-	delete(p.usedIPv6Addrs, ipStr)
+	if count, exists := p.usedIPv6Addrs[ipStr]; exists {
+		if count > 1 {
+			// 引用计数大于1，减少计数
+			p.usedIPv6Addrs[ipStr] = count - 1
+		} else {
+			// 引用计数为1或更少，移除映射（标记为未使用）
+			delete(p.usedIPv6Addrs, ipStr)
+		}
+	}
 	p.usedIPv6Mutex.Unlock()
 }
 
@@ -1358,7 +1361,8 @@ func (p *LocalIPPool) SetTargetIPCount(count int) {
 
 			unusedAddrs := make([]string, 0)
 			for addr := range p.activeIPv6Addrs {
-				if !p.usedIPv6Addrs[addr] {
+				// 引用计数为0或不存在表示未使用
+				if refCount, exists := p.usedIPv6Addrs[addr]; !exists || refCount == 0 {
 					unusedAddrs = append(unusedAddrs, addr)
 				}
 			}
@@ -1415,10 +1419,12 @@ func (p *LocalIPPool) cleanupUnusedIPv6Addresses() {
 
 	activeCount := len(p.activeIPv6Addrs)
 
-	// 找出未使用的地址（空闲地址），但排除系统保留地址（如 ::2）
+	// 找出未使用的地址（空闲地址，引用计数为0），但排除系统保留地址（如 ::2）
 	unusedAddrs := make([]string, 0)
 	for addr := range p.activeIPv6Addrs {
-		if !p.usedIPv6Addrs[addr] {
+		// 引用计数为0或不存在表示未使用
+		refCount := p.usedIPv6Addrs[addr]
+		if refCount == 0 {
 			// 检查是否是系统保留地址，如果是则跳过
 			ip := net.ParseIP(addr)
 			if ip != nil && !isReservedIPv6Address(ip) {
