@@ -12,11 +12,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"crawler-platform/localippool"
-	projlogger "crawler-platform/logger"
-
 	utls "github.com/refraction-networking/utls"
 	"golang.org/x/net/http2"
+
+	"crawler-platform/localippool"
+	projlogger "crawler-platform/logger"
 )
 
 // UTLSConnection uTLS连接包装器
@@ -155,7 +155,7 @@ func (c *UTLSConnection) RoundTrip(req *http.Request) (*http.Response, error) {
 	c.mu.Lock()
 	if !c.healthy {
 		c.mu.Unlock()
-		return nil, fmt.Errorf("连接已标记为不健康")
+		return nil, fmt.Errorf("%w", ErrConnectionUnhealthy)
 	}
 	// 更新最后使用时间
 	c.lastUsed = time.Now()
@@ -259,7 +259,7 @@ func (c *UTLSConnection) roundTripH2(req *http.Request) (*http.Response, error) 
 	c.mu.Lock()
 	if !c.healthy {
 		c.mu.Unlock()
-		return nil, fmt.Errorf("连接已标记为不健康")
+		return nil, fmt.Errorf("%w", ErrConnectionUnhealthy)
 	}
 	c.mu.Unlock()
 
@@ -537,7 +537,7 @@ func establishConnection(ip, domain string, config *PoolConfig, on403 func(strin
 			on403(ip)
 		}
 		projlogger.Debug("健康检查返回403，IP %s 已加入黑名单", ip)
-		return nil, fmt.Errorf("健康检查失败，状态码: 403 (IP已加入黑名单)")
+		return nil, fmt.Errorf("%w: 健康检查失败，状态码: 403", ErrIPBlockedBy403)
 	case http.StatusNotFound:
 		// 404 错误，记录详细的请求信息用于调试
 		// 注意：curl 测试显示同一个 IP 可以返回 200，所以 404 可能是请求头或协议问题

@@ -26,8 +26,7 @@ type Client struct {
 // NewClient 创建并初始化所有组件。
 func NewClient(config *PoolConfig, remotePool RemoteIPPool) (*Client, error) {
 	if config == nil || remotePool == nil {
-		// 修正：使用 fmt.Errorf 替代 errors.New
-		return nil, fmt.Errorf("配置和远程IP池提供者不能为空")
+		return nil, fmt.Errorf("%w: 配置和远程IP池提供者不能为空", ErrInvalidConfig)
 	}
 
 	// 1. 创建黑名单和连接管理器 (ConnectionManager 即为白名单)
@@ -97,7 +96,7 @@ func (c *Client) GetConnectionForHost(host string) (*UTLSConnection, error) {
 		// 如果没有健康连接，尝试获取所有连接（包括不健康的），并尝试激活它们
 		allConns := c.connManager.GetAllConnectionsForHost(host)
 		if len(allConns) == 0 {
-			return nil, fmt.Errorf("没有到主机 %s 的可用连接，请等待PoolManager预热", host)
+			return nil, fmt.Errorf("%w: 没有到主机 %s 的可用连接，请等待PoolManager预热", ErrNoAvailableConnection, host)
 		}
 
 		// 所有连接都不健康，尝试快速激活不健康的连接
@@ -144,7 +143,7 @@ func (c *Client) GetConnectionForHost(host string) (*UTLSConnection, error) {
 
 		// 如果所有连接都不健康且无法激活，返回错误
 		// 但这种情况应该很少发生，因为连接应该能够恢复
-		return nil, fmt.Errorf("没有到主机 %s 的可用连接，所有连接都不健康，正在尝试激活，请稍后重试", host)
+		return nil, fmt.Errorf("%w: 没有到主机 %s 的可用连接，所有连接都不健康，正在尝试激活，请稍后重试", ErrNoAvailableConnection, host)
 	}
 
 	// 为了让同一主机的多个预热连接都能参与请求，这里从随机位置开始尝试获取连接。
@@ -160,7 +159,7 @@ func (c *Client) GetConnectionForHost(host string) (*UTLSConnection, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("主机 %s 的所有连接当前都在使用中", host)
+	return nil, fmt.Errorf("%w: 主机 %s 的所有连接当前都在使用中", ErrConnectionInUse, host)
 }
 
 // ReleaseConnection 将使用完毕的连接交还给客户端处理。
@@ -338,7 +337,7 @@ func (c *Client) healthCheck() {
 					projlogger.Info("✅ 连接 %s 已激活（恢复健康）", targetIP)
 				}
 				conn.mu.Unlock()
-				projlogger.Debug("健康检查通过，连接 %s 状态正常", targetIP)
+				//projlogger.Debug("健康检查通过，连接 %s 状态正常", targetIP)
 			case http.StatusForbidden:
 				// 只有403错误才加入黑名单并移除连接
 				projlogger.Warn("健康检查发现403，将IP %s 从白名单降级到黑名单", targetIP)

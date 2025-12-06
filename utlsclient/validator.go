@@ -2,18 +2,14 @@ package utlsclient
 
 import (
 	"bytes"
-	ge "crawler-platform/GoogleEarth"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
+	ge "crawler-platform/GoogleEarth"
 	projlogger "crawler-platform/logger"
 )
-
-// ErrIPBlockedBy403 是一个特定的错误，用于明确表示IP因为403 Forbidden而被拒绝。
-var ErrIPBlockedBy403 = errors.New("validation failed with 403 Forbidden")
 
 // ValidationResult 包含验证成功后的结果。
 type ValidationResult struct {

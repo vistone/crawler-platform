@@ -1,13 +1,13 @@
 package utlsclient
 
-import ( // 导入所需的标准库和第三方库
-	"fmt"       // 用于格式化输入输出
-	"math/rand" // 用于随机数生成
-	"strings"   // 用于字符串操作
-	"sync"      // 用于同步原语如互斥锁
-	"time"      // 用于时间处理
+import (
+	"fmt"
+	"math/rand"
+	"strings"
+	"sync"
+	"time"
 
-	utls "github.com/refraction-networking/utls" // 导入utls库用于TLS指纹伪装
+	utls "github.com/refraction-networking/utls"
 )
 
 // Profile 定义了浏览器指纹配置文件结构体
