@@ -5286,6 +5286,76 @@
         "postal": "1007",
         "timezone": "Europe/Budapest"
       }
+    },
+    {
+      "ip": "142.250.184.142",
+      "ip_info": {
+        "ip": "142.250.184.142",
+        "hostname": "sof02s43-in-f14.1e100.net",
+        "city": "Sofia",
+        "region": "Sofia-Capital",
+        "country": "BG",
+        "loc": "42.6975,23.3241",
+        "org": "AS15169 Google LLC",
+        "postal": "1000",
+        "timezone": "Europe/Sofia"
+      }
+    },
+    {
+      "ip": "142.250.187.110",
+      "ip_info": {
+        "ip": "142.250.187.110",
+        "hostname": "sof02s44-in-f14.1e100.net",
+        "city": "Sofia",
+        "region": "Sofia-Capital",
+        "country": "BG",
+        "loc": "42.6975,23.3241",
+        "org": "AS15169 Google LLC",
+        "postal": "1000",
+        "timezone": "Europe/Sofia"
+      }
+    },
+    {
+      "ip": "142.251.140.46",
+      "ip_info": {
+        "ip": "142.251.140.46",
+        "hostname": "sof04s05-in-f14.1e100.net",
+        "city": "Sofia",
+        "region": "Sofia-Capital",
+        "country": "BG",
+        "loc": "42.6975,23.3241",
+        "org": "AS15169 Google LLC",
+        "postal": "1000",
+        "timezone": "Europe/Sofia"
+      }
+    },
+    {
+      "ip": "172.217.17.110",
+      "ip_info": {
+        "ip": "172.217.17.110",
+        "hostname": "ams15s29-in-f110.1e100.net",
+        "city": "Sofia",
+        "region": "Sofia-Capital",
+        "country": "BG",
+        "loc": "42.6975,23.3241",
+        "org": "AS15169 Google LLC",
+        "postal": "1000",
+        "timezone": "Europe/Sofia"
+      }
+    },
+    {
+      "ip": "172.217.17.142",
+      "ip_info": {
+        "ip": "172.217.17.142",
+        "hostname": "ams15s30-in-f14.1e100.net",
+        "city": "Sofia",
+        "region": "Sofia-Capital",
+        "country": "BG",
+        "loc": "42.6975,23.3241",
+        "org": "AS15169 Google LLC",
+        "postal": "1000",
+        "timezone": "Europe/Sofia"
+      }
     }
   ],
   "ipv6": [
@@ -10014,6 +10084,32 @@
         "org": "AS15169 Google LLC",
         "postal": "60306",
         "timezone": "Europe/Berlin"
+      }
+    },
+    {
+      "ip": "2a00:1450:4017:80d::200e",
+      "ip_info": {
+        "ip": "2a00:1450:4017:80d::200e",
+        "city": "Sofia",
+        "region": "Sofia-Capital",
+        "country": "BG",
+        "loc": "42.6975,23.3241",
+        "org": "AS15169 Google LLC",
+        "postal": "1000",
+        "timezone": "Europe/Sofia"
+      }
+    },
+    {
+      "ip": "2a00:1450:4017:809::200e",
+      "ip_info": {
+        "ip": "2a00:1450:4017:809::200e",
+        "city": "Sofia",
+        "region": "Sofia-Capital",
+        "country": "BG",
+        "loc": "42.6975,23.3241",
+        "org": "AS15169 Google LLC",
+        "postal": "1000",
+        "timezone": "Europe/Sofia"
       }
     }
   ]
