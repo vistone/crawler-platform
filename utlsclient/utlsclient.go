@@ -97,13 +97,18 @@ func (c *Client) GetConnectionForHost(host string) (*UTLSConnection, error) {
 		// 如果没有健康连接，尝试获取所有连接（包括不健康的），并尝试激活它们
 		allConns := c.connManager.GetAllConnectionsForHost(host)
 		if len(allConns) == 0 {
-			return nil, fmt.Errorf("%w: 没有到主机 %s 的可用连接，请等待PoolManager预热", ErrNoAvailableConnection, host)
+			// 检查 PoolManager 是否已完成初始化
+			if !c.poolManager.IsInitialized() {
+				// PoolManager 还未初始化完成，立即返回错误，让上层处理重试
+				return nil, fmt.Errorf("%w: 没有到主机 %s 的可用连接，PoolManager正在预热中，请稍后重试", ErrNoAvailableConnection, host)
+			}
+			// PoolManager 已初始化完成，但该主机没有可用连接
+			return nil, fmt.Errorf("%w: 没有到主机 %s 的可用连接，请检查该主机的IP配置", ErrNoAvailableConnection, host)
 		}
 
-		// 所有连接都不健康，尝试快速激活不健康的连接
-		projlogger.Debug("主机 %s 的所有连接都不健康，尝试快速激活连接...", host)
+		// 所有连接都不健康，异步触发快速激活，但不等待
 		activatedCount := 0
-		maxActivate := 5 // 最多同时激活5个连接
+		maxActivate := 5
 		for _, conn := range allConns {
 			conn.mu.Lock()
 			inUse := conn.inUse
@@ -120,41 +125,16 @@ func (c *Client) GetConnectionForHost(host string) (*UTLSConnection, error) {
 			}
 		}
 
-		if activatedCount > 0 {
-			// 等待更长时间，让快速健康检查有机会完成
-			// 使用指数退避：第一次等待200ms，如果还没恢复，再等待
-			waitTime := 200 * time.Millisecond
-			for retry := 0; retry < 3; retry++ {
-				time.Sleep(waitTime)
-				// 再次尝试获取健康连接
-				connections := c.connManager.GetConnectionsForHost(host)
-				if len(connections) > 0 {
-					// 有连接恢复了，尝试获取
-					for _, conn := range connections {
-						if conn.TryAcquire() {
-							projlogger.Debug("快速激活成功，获取到连接 %s (等待了 %v)", conn.TargetIP(), time.Duration(retry+1)*waitTime)
-							return conn, nil
-						}
-					}
-				}
-				// 如果还没恢复，增加等待时间
-				waitTime *= 2
-			}
-		}
-
-		// 如果所有连接都不健康且无法激活，返回错误
-		// 但这种情况应该很少发生，因为连接应该能够恢复
-		return nil, fmt.Errorf("%w: 没有到主机 %s 的可用连接，所有连接都不健康，正在尝试激活，请稍后重试", ErrNoAvailableConnection, host)
+		// 立即返回错误，不等待激活完成（避免阻塞，让上层决定是否重试）
+		return nil, fmt.Errorf("%w: 没有到主机 %s 的可用连接，所有连接都不健康，正在异步激活", ErrNoAvailableConnection, host)
 	}
 
-	// 为了让同一主机的多个预热连接都能参与请求，这里从随机位置开始尝试获取连接。
+	// 有健康连接，从随机位置开始尝试获取
 	n := len(connections)
-
 	start := rand.Intn(n)
 	for i := 0; i < n; i++ {
 		idx := (start + i) % n
 		conn := connections[idx]
-		//projlogger.Info("获取热连接索引 %d，ip是 %s，已经完成请求数: %d", idx, conn.TargetIP(), conn.requestCount)
 		if conn.TryAcquire() {
 			return conn, nil
 		}

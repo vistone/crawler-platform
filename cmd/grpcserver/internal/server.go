@@ -511,8 +511,8 @@ func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *ta
 	}
 
 	// 发送请求（带 5xx 与网络错误重试）
-	// 增加重试次数，确保连接有时间恢复
-	const maxHTTPRetries = 1
+	// 统一重试策略：只在预热中或连接恢复时重试，其他情况立即返回
+	const maxHTTPRetries = 2 // 最多重试2次（初始请求+1次重试）
 	var lastErr error
 	var conn *utlsclient.UTLSConnection
 
@@ -522,24 +522,30 @@ func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *ta
 		newConn, err := s.utlsClient.GetConnectionForHost(hostName)
 		if err != nil {
 			lastErr = err
-			// 优化等待时间：使用指数退避，但限制最大等待时间
-			// 对于连接恢复，等待时间不要太长，避免请求超时
-			waitTime := time.Duration(attempt) * 200 * time.Millisecond
-			if strings.Contains(err.Error(), "没有可用连接") || strings.Contains(err.Error(), "所有连接都不健康") {
-				// 连接正在恢复，等待稍长时间（但不超过500ms * attempt）
-				waitTime = time.Duration(attempt) * 300 * time.Millisecond
-				if waitTime > 2*time.Second {
-					waitTime = 2 * time.Second // 限制最大等待时间为2秒
-				}
-				s.logger.Debug("连接正在恢复中，等待 %v 后重试 (第 %d 次)", waitTime, attempt)
+			errStr := err.Error()
+
+			// 统一判断是否需要重试
+			shouldRetry := false
+			var waitTime time.Duration
+
+			if strings.Contains(errStr, "PoolManager正在预热中") {
+				// 预热中：等待后重试
+				shouldRetry = true
+				waitTime = 200 * time.Millisecond // 短暂等待，让预热有机会完成
+			} else if strings.Contains(errStr, "所有连接都不健康，正在异步激活") {
+				// 连接正在异步激活：短暂等待后重试
+				shouldRetry = true
+				waitTime = 100 * time.Millisecond // 短暂等待，让异步激活有机会完成
 			}
-			if attempt < maxHTTPRetries {
-				s.logger.Warn("获取连接失败(第 %d 次，将重试): %v", attempt, err)
+
+			if shouldRetry && attempt < maxHTTPRetries {
+				s.logger.Debug("连接获取失败，等待 %v 后重试 (第 %d 次): %v", waitTime, attempt, err)
 				time.Sleep(waitTime)
 				continue
 			}
-			// 最后一次重试失败，返回错误（但这种情况应该很少发生）
-			return nil, 0, fmt.Errorf("获取连接失败(重试 %d 次后仍失败): %w", attempt, err)
+
+			// 不需要重试或已达到最大重试次数，立即返回错误
+			return nil, 0, fmt.Errorf("获取连接失败(重试 %d 次后仍失败): %w", attempt-1, err)
 		}
 
 		// 释放旧连接（如果有）
@@ -588,28 +594,18 @@ func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *ta
 			s.logger.Warn("[任务请求失败] 本地IPv6=%s, 远程IPv6=%s, 已完成请求数=%d, 耗时=%v, 错误=%v",
 				getIPDisplay(localIP), getIPDisplay(remoteIP), requestCount, requestDuration, err)
 
-			// 优化等待时间：使用指数退避，但限制最大等待时间
-			// 对于连接问题，等待时间不要太长，避免请求超时
-			waitTime := time.Duration(attempt) * 200 * time.Millisecond
-			if strings.Contains(err.Error(), "连接已标记为不健康") ||
-				strings.Contains(err.Error(), "use of closed network connection") ||
-				strings.Contains(err.Error(), "connection closed") ||
-				strings.Contains(err.Error(), "broken pipe") ||
-				strings.Contains(err.Error(), "EOF") {
-				// 连接问题，等待稍长时间让快速健康检查恢复连接（但不超过500ms * attempt）
-				waitTime = time.Duration(attempt) * 300 * time.Millisecond
-				if waitTime > 2*time.Second {
-					waitTime = 2 * time.Second // 限制最大等待时间为2秒
-				}
-				s.logger.Debug("连接问题，等待 %v 让连接恢复后重试 (第 %d 次)", waitTime, attempt)
-			}
+			// 释放连接（连接可能已损坏）
+			s.utlsClient.ReleaseConnection(conn)
+			conn = nil
+
+			// 对于网络错误，短暂等待后重试（让连接池有机会恢复）
 			if attempt < maxHTTPRetries {
-				s.logger.Warn("HTTP 请求失败(第 %d 次，将重试): %v", attempt, err)
+				waitTime := 50 * time.Millisecond // 减少等待时间，从200ms减少到50ms
+				s.logger.Debug("HTTP 请求失败，等待 %v 后重试 (第 %d 次): %v", waitTime, attempt, err)
 				time.Sleep(waitTime)
 				continue
 			}
-			// 最后一次重试失败，释放连接并返回错误
-			s.utlsClient.ReleaseConnection(conn)
+			// 最后一次重试失败，返回错误
 			return nil, 0, fmt.Errorf("HTTP 请求失败(重试 %d 次后仍失败): %w", attempt, err)
 		}
 
@@ -627,9 +623,12 @@ func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *ta
 		resp.Body.Close()
 		if readErr != nil {
 			lastErr = readErr
+			// 释放连接
+			s.utlsClient.ReleaseConnection(conn)
+			conn = nil
 			if attempt < maxHTTPRetries {
 				s.logger.Warn("读取响应体失败(第 %d 次，将重试): %v", attempt, readErr)
-				time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+				time.Sleep(50 * time.Millisecond) // 减少等待时间
 				continue
 			}
 			return nil, 0, fmt.Errorf("读取响应体失败(重试 %d 次后仍失败): %w", attempt, readErr)
@@ -637,8 +636,11 @@ func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *ta
 
 		// 对 5xx 做有限次重试
 		if resp.StatusCode >= 500 && resp.StatusCode < 600 && attempt < maxHTTPRetries {
+			// 释放连接（5xx可能是临时问题，释放连接让连接池有机会恢复）
+			s.utlsClient.ReleaseConnection(conn)
+			conn = nil
 			s.logger.Warn("后端返回状态码 %d (第 %d 次)，将重试，请求URL=%s", resp.StatusCode, attempt, requestURL)
-			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond) // 减少等待时间
 			continue
 		}
 

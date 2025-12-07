@@ -28,7 +28,7 @@ type PoolManager struct {
 	stopChan    chan struct{}
 	wg          sync.WaitGroup
 	stopOnce    sync.Once // 确保Stop只执行一次
-	initialized bool      // 标记是否已完成初始化
+	initialized int32     // 标记是否已完成初始化（使用atomic保证线程安全）
 	initOnce    sync.Once // 确保初始化只执行一次
 }
 
@@ -66,13 +66,18 @@ func (pm *PoolManager) Stop() {
 	})
 }
 
+// IsInitialized 检查连接池管理器是否已完成初始化。
+func (pm *PoolManager) IsInitialized() bool {
+	return atomic.LoadInt32(&pm.initialized) == 1
+}
+
 func (pm *PoolManager) maintenanceLoop() {
 	defer pm.wg.Done()
 
 	// 初始化：从 RemoteIPPool 获取所有 IP 进行预热
 	pm.initOnce.Do(func() {
 		pm.maintainPoolFromRemoteIPs(true) // true 表示初始化模式
-		pm.initialized = true
+		atomic.StoreInt32(&pm.initialized, 1)
 	})
 
 	// 预热定时器
