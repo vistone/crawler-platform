@@ -25,6 +25,7 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 )
 
 // Server gRPC 服务器结构
@@ -40,7 +41,7 @@ type Server struct {
 	clients   map[string]*tasksmanager.TaskClientInfo // 客户端信息映射
 	clientsMu sync.RWMutex
 
-	nodes   map[string]*tasksmanager.GrpcServerNodeInfo // 节点信息映射
+	nodes   map[string]*tasksmanager.GrpcServerNodeInfo // 节点信息映射 (key: IP:Port，而不是 UUID)
 	nodesMu sync.RWMutex
 
 	tasks   map[string]*tasksmanager.TaskRequest // 任务映射
@@ -54,8 +55,8 @@ type Server struct {
 	taskLengthMu    sync.Mutex
 
 	// 记录节点注册时间，用于判断新节点
-	nodeRegisterTimes  map[string]time.Time       // 节点UUID -> 注册时间
-	lastHeartbeatNodes map[string]map[string]bool // 客户端UUID -> 已知节点UUID集合（用于返回新节点）
+	nodeRegisterTimes  map[string]time.Time       // 节点地址(IP:Port) -> 注册时间
+	lastHeartbeatNodes map[string]map[string]bool // 客户端UUID -> 已知节点地址(IP:Port)集合（用于返回新节点）
 
 	// gRPC 服务器实例
 	grpcServer *grpc.Server
@@ -134,8 +135,8 @@ func NewServerWithTLS(address, port string, tlsConfig *tls.Config) *Server {
 	// 注册自己为节点
 	s.registerSelfAsNode()
 
-	// 创建节点连接管理器
-	s.nodeConnector = NewNodeConnector(s.nodeID, s.address, s.port)
+	// 创建节点连接管理器（传递 TLS 配置）
+	s.nodeConnector = NewNodeConnectorWithTLS(s.nodeID, s.address, s.port, tlsConfig)
 	s.nodeConnector.Start()
 
 	return s
@@ -235,6 +236,25 @@ func generateNodeID() string {
 	return uuid.New().String()
 }
 
+// getNodeAddr 获取节点的地址标识符（IP:Port）
+// 这是节点的唯一标识，而不是 UUID
+func (s *Server) getNodeAddr(nodeInfo *tasksmanager.GrpcServerNodeInfo) string {
+	nodeIP := nodeInfo.NodeIp
+	if nodeIP == "0.0.0.0" || nodeIP == "" {
+		nodeIP = "127.0.0.1"
+	}
+	return fmt.Sprintf("%s:%s", nodeIP, nodeInfo.NodePort)
+}
+
+// getSelfAddr 获取本节点的地址标识符
+func (s *Server) getSelfAddr() string {
+	addr := s.address
+	if addr == "0.0.0.0" || addr == "" {
+		addr = "127.0.0.1"
+	}
+	return fmt.Sprintf("%s:%s", addr, s.port)
+}
+
 // registerSelfAsNode 将自己注册为节点
 func (s *Server) registerSelfAsNode() {
 	hostname, _ := GetRealHostname()
@@ -262,11 +282,13 @@ func (s *Server) registerSelfAsNode() {
 		NodeLastActiveTime: time.Now().Format(time.RFC3339),
 	}
 
+	// 使用 IP:Port 作为唯一标识
+	nodeAddr := s.getSelfAddr()
 	s.nodesMu.Lock()
-	s.nodes[s.nodeID] = nodeInfo
+	s.nodes[nodeAddr] = nodeInfo
 	s.nodesMu.Unlock()
 
-	s.logger.Info("节点已注册: %s (%s:%s)", s.nodeID, s.address, s.port)
+	s.logger.Info("节点已注册: %s (UUID: %s)", nodeAddr, s.nodeID)
 }
 
 // Start 启动 gRPC 服务器
@@ -287,6 +309,22 @@ func (s *Server) Start() error {
 	} else {
 		s.logger.Info("gRPC 服务器未启用 TLS（使用明文连接）")
 	}
+
+	// 配置服务器端 keepalive 参数，保持连接活跃
+	keepaliveEnforcementPolicy := keepalive.EnforcementPolicy{
+		MinTime:             5 * time.Second, // 客户端必须每 5 秒至少发送一次 ping
+		PermitWithoutStream: true,            // 允许客户端在没有活跃流时发送 ping
+	}
+	keepaliveServerParams := keepalive.ServerParameters{
+		MaxConnectionIdle:     300 * time.Second, // 空闲连接最大保持时间（5分钟）
+		MaxConnectionAge:      24 * time.Hour,    // 连接最大生存时间（24小时）
+		MaxConnectionAgeGrace: 30 * time.Second,  // 连接关闭宽限时间
+		Time:                  10 * time.Second,  // 每 10 秒发送一次 keepalive ping
+		Timeout:               3 * time.Second,   // keepalive ping 超时时间
+	}
+
+	opts = append(opts, grpc.KeepaliveEnforcementPolicy(keepaliveEnforcementPolicy))
+	opts = append(opts, grpc.KeepaliveParams(keepaliveServerParams))
 
 	s.grpcServer = grpc.NewServer(opts...)
 	tasksmanager.RegisterTasksManagerServer(s.grpcServer, s)
@@ -366,7 +404,7 @@ func (s *Server) GetTaskClientInfoList(ctx context.Context, req *tasksmanager.Ta
 	// 从其他节点获取客户端列表
 	if s.nodeConnector != nil {
 		connectedNodes := s.nodeConnector.GetConnectedNodes()
-		for nodeUUID, client := range connectedNodes {
+		for nodeAddr, client := range connectedNodes {
 			// 向其他服务器节点请求客户端列表
 			ctx2, cancel := context.WithTimeout(ctx, 2*time.Second)
 			resp, err := client.GetTaskClientInfoList(ctx2, &tasksmanager.TaskClientInfoListRequest{})
@@ -377,7 +415,7 @@ func (s *Server) GetTaskClientInfoList(ctx context.Context, req *tasksmanager.Ta
 					// 合并客户端信息（如果本地没有或版本更新，则使用远程的）
 					if existing, exists := clientMap[clientInfo.ClientUuid]; !exists {
 						clientMap[clientInfo.ClientUuid] = clientInfo
-						s.logger.Debug("从节点 %s 同步客户端: %s", nodeUUID, clientInfo.ClientUuid)
+						s.logger.Debug("从节点 %s 同步客户端: %s", nodeAddr, clientInfo.ClientUuid)
 					} else {
 						// 比较最后活跃时间，保留最新的
 						if clientInfo.ClientLastActiveTime > existing.ClientLastActiveTime {
@@ -386,7 +424,7 @@ func (s *Server) GetTaskClientInfoList(ctx context.Context, req *tasksmanager.Ta
 					}
 				}
 			} else {
-				s.logger.Debug("从节点 %s 获取客户端列表失败: %v", nodeUUID, err)
+				s.logger.Debug("从节点 %s 获取客户端列表失败: %v", nodeAddr, err)
 			}
 		}
 	}
@@ -419,9 +457,10 @@ func (s *Server) GetGrpcServerNodeInfoList(ctx context.Context, req *tasksmanage
 	defer s.nodesMu.RUnlock()
 
 	items := make([]*tasksmanager.GrpcServerNodeInfo, 0)
-	for uuid, node := range s.nodes {
+	for _, node := range s.nodes {
 		// 只返回服务器节点，不包括客户端节点
-		if s.isServerNode(uuid) {
+		// 注意：现在使用 IP:Port 作为 key，需要通过 UUID 判断是否为服务器节点
+		if s.isServerNode(node.NodeUuid) {
 			items = append(items, node)
 		}
 	}
@@ -824,9 +863,9 @@ func (s *Server) RegisterClient(ctx context.Context, clientInfo *tasksmanager.Ta
 	// 返回所有已知的服务器节点列表（客户端可以连接到这些服务器）
 	s.nodesMu.RLock()
 	serverNodes := make([]*tasksmanager.GrpcServerNodeInfo, 0)
-	for uuid, node := range s.nodes {
-		// 只返回服务器节点
-		if s.isServerNode(uuid) {
+	for _, node := range s.nodes {
+		// 只返回服务器节点（通过 UUID 判断）
+		if s.isServerNode(node.NodeUuid) {
 			serverNodes = append(serverNodes, node)
 		}
 	}
@@ -886,39 +925,59 @@ func (s *Server) ClientHeartbeat(ctx context.Context, clientInfo *tasksmanager.T
 	clientKnownNodesKey := "client-" + clientInfo.ClientUuid
 	s.nodesMu.RLock()
 	knownNodes := s.lastHeartbeatNodes[clientKnownNodesKey]
+	isFirstHeartbeat := (knownNodes == nil || len(knownNodes) == 0)
 	if knownNodes == nil {
 		knownNodes = make(map[string]bool)
 	}
 
-	// 找出新注册的服务器节点（客户端不知道的，且最近60秒内注册的）
+	// 找出新注册的服务器节点（客户端不知道的，或者是最近60秒内注册的新节点）
 	now := time.Now()
-	for uuid, node := range s.nodes {
-		if !s.isServerNode(uuid) {
+	for nodeAddr, node := range s.nodes {
+		if !s.isServerNode(node.NodeUuid) {
 			continue
 		}
 
-		// 如果客户端已经知道这个节点，跳过（除非是最近60秒内注册的新节点）
-		if knownNodes[uuid] {
-			registerTime, isNew := s.nodeRegisterTimes[uuid]
-			isRecentNewNode := isNew && now.Sub(registerTime) < 60*time.Second
-			// 只有最近注册的新节点才返回（即使客户端知道，因为可能是首次同步）
-			if !isRecentNewNode {
-				continue // 客户端已经知道且不是新节点，不返回
-			}
+		// 如果是首次心跳，返回所有节点
+		if isFirstHeartbeat {
+			newServerNodes = append(newServerNodes, node)
+			s.logger.Debug("首次心跳，向客户端 %s 返回所有节点: %s (UUID: %s)", clientInfo.ClientUuid, nodeAddr, node.NodeUuid)
+			continue
 		}
 
-		// 客户端不知道的节点，或者是最近60秒内注册的新节点
+		// 如果客户端已经知道这个节点
+		if knownNodes[nodeAddr] {
+			// 检查是否是最近注册的新节点（60秒内）
+			registerTime, isNew := s.nodeRegisterTimes[nodeAddr]
+			isRecentNewNode := isNew && now.Sub(registerTime) < 60*time.Second
+			if isRecentNewNode {
+				// 最近注册的新节点，即使客户端知道也返回（因为可能是节点重启，UUID变化）
+				newServerNodes = append(newServerNodes, node)
+				s.logger.Debug("向客户端 %s 返回最近注册的节点: %s (UUID: %s)", clientInfo.ClientUuid, nodeAddr, node.NodeUuid)
+			}
+			// 客户端已经知道且不是新节点，跳过
+			continue
+		}
+
+		// 客户端不知道的节点，总是返回（无论注册时间）
 		newServerNodes = append(newServerNodes, node)
+		s.logger.Debug("向客户端 %s 返回新发现的节点: %s (UUID: %s)", clientInfo.ClientUuid, nodeAddr, node.NodeUuid)
 	}
 
-	// 更新该客户端已知的服务器节点列表
+	// 更新该客户端已知的服务器节点列表（使用 IP:Port 作为 key）
 	s.lastHeartbeatNodes[clientKnownNodesKey] = make(map[string]bool)
-	for uuid := range s.nodes {
-		if s.isServerNode(uuid) {
-			s.lastHeartbeatNodes[clientKnownNodesKey][uuid] = true
+	for nodeAddr, node := range s.nodes {
+		if s.isServerNode(node.NodeUuid) {
+			s.lastHeartbeatNodes[clientKnownNodesKey][nodeAddr] = true
 		}
 	}
 	s.nodesMu.RUnlock()
+
+	if len(newServerNodes) > 0 {
+		s.logger.Info("向客户端 %s 返回 %d 个新服务器节点", clientInfo.ClientUuid, len(newServerNodes))
+		for _, node := range newServerNodes {
+			s.logger.Info("  - 节点: %s (%s:%s)", node.NodeUuid, node.NodeIp, node.NodePort)
+		}
+	}
 
 	return &tasksmanager.ClientHeartbeatResponse{
 		Success:        true,
@@ -930,12 +989,22 @@ func (s *Server) ClientHeartbeat(ctx context.Context, clientInfo *tasksmanager.T
 func (s *Server) RegisterNode(ctx context.Context, req *tasksmanager.NodeRegistrationRequest) (*tasksmanager.NodeRegistrationResponse, error) {
 	nodeInfo := req.NodeInfo
 
+	// 使用 IP:Port 作为唯一标识
+	nodeAddr := s.getNodeAddr(nodeInfo)
+	selfAddr := s.getSelfAddr()
+
 	// 只处理服务器节点
 	s.nodesMu.Lock()
-	s.nodes[nodeInfo.NodeUuid] = nodeInfo
+	// 如果节点已存在（相同 IP:Port），更新节点信息（UUID 可能已变化）
+	if existingNode, exists := s.nodes[nodeAddr]; exists {
+		s.logger.Info("节点 %s 已存在，更新节点信息 (UUID: %s -> %s)", nodeAddr, existingNode.NodeUuid, nodeInfo.NodeUuid)
+	}
+	s.nodes[nodeAddr] = nodeInfo
+	// 记录注册时间（用于判断新节点）
+	s.nodeRegisterTimes[nodeAddr] = time.Now()
 	s.nodesMu.Unlock()
 
-	s.logger.Info("服务器节点注册: %s (%s:%s)", nodeInfo.NodeUuid, nodeInfo.NodeIp, nodeInfo.NodePort)
+	s.logger.Info("服务器节点注册: %s (UUID: %s)", nodeAddr, nodeInfo.NodeUuid)
 
 	// 记录节点注册时间
 	s.nodeRegisterTimes[nodeInfo.NodeUuid] = time.Now()
@@ -951,12 +1020,13 @@ func (s *Server) RegisterNode(ctx context.Context, req *tasksmanager.NodeRegistr
 	// 通知所有客户端有新服务器节点上线（用于客户端自动连接）
 	s.notifyClientsAboutNewServerNode(nodeInfo)
 
-	// 返回已知的服务器节点列表
+	// 返回已知的服务器节点列表（selfAddr 已在上面声明）
 	s.nodesMu.RLock()
 	knownNodes := make([]*tasksmanager.GrpcServerNodeInfo, 0)
-	for uuid, node := range s.nodes {
-		// 只返回服务器节点
-		if uuid != nodeInfo.NodeUuid && s.isServerNode(uuid) {
+	for _, node := range s.nodes {
+		// 只返回服务器节点，不包括自己
+		nodeAddr := s.getNodeAddr(node)
+		if nodeAddr != selfAddr && s.isServerNode(node.NodeUuid) {
 			knownNodes = append(knownNodes, node)
 		}
 	}
@@ -971,40 +1041,54 @@ func (s *Server) RegisterNode(ctx context.Context, req *tasksmanager.NodeRegistr
 
 // NodeHeartbeat 服务器节点心跳（只处理服务器节点，客户端不应该使用此接口）
 func (s *Server) NodeHeartbeat(ctx context.Context, req *tasksmanager.NodeHeartbeatRequest) (*tasksmanager.NodeHeartbeatResponse, error) {
+	if req.NodeInfo == nil {
+		return &tasksmanager.NodeHeartbeatResponse{
+			Success: false,
+		}, fmt.Errorf("节点信息为空")
+	}
+
+	// 使用 IP:Port 作为唯一标识
+	nodeAddr := s.getNodeAddr(req.NodeInfo)
+
 	// 只处理服务器节点的心跳
 	s.nodesMu.Lock()
-	if node, exists := s.nodes[req.NodeUuid]; exists {
-		// 更新节点的资源使用情况
-		if req.NodeInfo != nil {
-			node.CpuUsagePercent = req.NodeInfo.CpuUsagePercent
-			node.MemoryUsedBytes = req.NodeInfo.MemoryUsedBytes
-			node.MemoryTotalBytes = req.NodeInfo.MemoryTotalBytes
-			node.NetworkRxBytesPerSec = req.NodeInfo.NetworkRxBytesPerSec
-			node.NetworkTxBytesPerSec = req.NodeInfo.NetworkTxBytesPerSec
-			node.DiskUsedBytes = req.NodeInfo.DiskUsedBytes
-			node.DiskTotalBytes = req.NodeInfo.DiskTotalBytes
-			updateTime := time.Now().Format(time.RFC3339)
-			node.ResourceUpdateTime = &updateTime
+	if node, exists := s.nodes[nodeAddr]; exists {
+		// 节点已存在，更新节点信息（UUID 可能已变化）
+		if req.NodeUuid != node.NodeUuid {
+			s.logger.Debug("节点 %s UUID 已更新: %s -> %s", nodeAddr, node.NodeUuid, req.NodeUuid)
+			node.NodeUuid = req.NodeUuid // 更新 UUID
 		}
+		// 更新节点的资源使用情况
+		node.CpuUsagePercent = req.NodeInfo.CpuUsagePercent
+		node.MemoryUsedBytes = req.NodeInfo.MemoryUsedBytes
+		node.MemoryTotalBytes = req.NodeInfo.MemoryTotalBytes
+		node.NetworkRxBytesPerSec = req.NodeInfo.NetworkRxBytesPerSec
+		node.NetworkTxBytesPerSec = req.NodeInfo.NetworkTxBytesPerSec
+		node.DiskUsedBytes = req.NodeInfo.DiskUsedBytes
+		node.DiskTotalBytes = req.NodeInfo.DiskTotalBytes
+		updateTime := time.Now().Format(time.RFC3339)
+		node.ResourceUpdateTime = &updateTime
 		node.NodeLastActiveTime = time.Now().Format(time.RFC3339)
 	} else {
 		// 如果节点不存在，可能是首次心跳，创建节点信息（仅限服务器节点）
-		if req.NodeInfo != nil && s.isServerNode(req.NodeUuid) {
-			s.nodes[req.NodeUuid] = req.NodeInfo
+		if s.isServerNode(req.NodeUuid) {
+			s.nodes[nodeAddr] = req.NodeInfo
 			updateTime := time.Now().Format(time.RFC3339)
 			req.NodeInfo.ResourceUpdateTime = &updateTime
 			req.NodeInfo.NodeLastActiveTime = time.Now().Format(time.RFC3339)
-			s.nodeRegisterTimes[req.NodeUuid] = time.Now()
+			s.nodeRegisterTimes[nodeAddr] = time.Now()
+			s.logger.Info("通过心跳发现新节点: %s (UUID: %s)", nodeAddr, req.NodeUuid)
 		}
 	}
 	s.nodesMu.Unlock()
 
-	s.logger.Debug("收到服务器节点心跳: %s", req.NodeUuid)
+	s.logger.Debug("收到服务器节点心跳: %s (UUID: %s)", nodeAddr, req.NodeUuid)
 
 	// 返回新上线的服务器节点（相对于该客户端上次心跳时）
 	var updatedNodes []*tasksmanager.GrpcServerNodeInfo
 
-	// 获取该客户端上次心跳时已知的服务器节点列表
+	// 获取该节点上次心跳时已知的服务器节点列表（使用 IP:Port 作为 key）
+	// nodeAddr 已在上面声明
 	s.nodesMu.RLock()
 	knownNodes := s.lastHeartbeatNodes[req.NodeUuid]
 	if knownNodes == nil {
@@ -1013,33 +1097,34 @@ func (s *Server) NodeHeartbeat(ctx context.Context, req *tasksmanager.NodeHeartb
 
 	// 找出新注册的服务器节点（最近60秒内注册的，且客户端不知道的）
 	// 只返回服务器节点，不包括客户端节点
+	selfAddr := s.getSelfAddr()
 	now := time.Now()
-	for uuid, node := range s.nodes {
+	for addr, node := range s.nodes {
 		// 跳过自己和请求心跳的节点，跳过客户端节点
-		if uuid == s.nodeID || uuid == req.NodeUuid || !s.isServerNode(uuid) {
+		if addr == selfAddr || addr == nodeAddr || !s.isServerNode(node.NodeUuid) {
 			continue
 		}
 
 		// 如果是客户端不知道的节点，或者是最近60秒内注册的新节点
-		registerTime, isNew := s.nodeRegisterTimes[uuid]
+		registerTime, isNew := s.nodeRegisterTimes[addr]
 		isRecentNewNode := isNew && now.Sub(registerTime) < 60*time.Second
 
-		if !knownNodes[uuid] || isRecentNewNode {
+		if !knownNodes[addr] || isRecentNewNode {
 			updatedNodes = append(updatedNodes, node)
 		}
 	}
 
-	// 更新该客户端已知的服务器节点列表（只记录服务器节点）
+	// 更新该节点已知的服务器节点列表（只记录服务器节点，使用 IP:Port 作为 key）
 	s.lastHeartbeatNodes[req.NodeUuid] = make(map[string]bool)
-	for uuid := range s.nodes {
-		if uuid != s.nodeID && uuid != req.NodeUuid && s.isServerNode(uuid) {
-			s.lastHeartbeatNodes[req.NodeUuid][uuid] = true
+	for addr, node := range s.nodes {
+		if addr != selfAddr && addr != nodeAddr && s.isServerNode(node.NodeUuid) {
+			s.lastHeartbeatNodes[req.NodeUuid][addr] = true
 		}
 	}
 	s.nodesMu.RUnlock()
 
 	if len(updatedNodes) > 0 {
-		s.logger.Debug("向客户端 %s 返回 %d 个新节点", req.NodeUuid, len(updatedNodes))
+		s.logger.Debug("向节点 %s (UUID: %s) 返回 %d 个新节点", nodeAddr, req.NodeUuid, len(updatedNodes))
 	}
 
 	return &tasksmanager.NodeHeartbeatResponse{
@@ -1077,24 +1162,33 @@ func (s *Server) SendNodeMessage(ctx context.Context, req *tasksmanager.NodeMess
 
 // SyncNodeList 同步节点列表
 func (s *Server) SyncNodeList(ctx context.Context, req *tasksmanager.SyncNodeListRequest) (*tasksmanager.SyncNodeListResponse, error) {
-	knownUUIDs := make(map[string]bool)
+	// 将已知的 UUID 列表转换为地址列表（通过查找节点）
+	knownAddrs := make(map[string]bool)
+	s.nodesMu.RLock()
 	for _, uuid := range req.KnownNodeUuids {
-		knownUUIDs[uuid] = true
+		// 通过 UUID 查找节点地址
+		for addr, node := range s.nodes {
+			if node.NodeUuid == uuid {
+				knownAddrs[addr] = true
+				break
+			}
+		}
 	}
+	s.nodesMu.RUnlock()
 
 	s.nodesMu.RLock()
 	nodesToAdd := make([]*tasksmanager.GrpcServerNodeInfo, 0)
 	nodesToUpdate := make([]*tasksmanager.GrpcServerNodeInfo, 0)
 
 	// 只同步服务器节点，不包括客户端节点
-	for uuid, node := range s.nodes {
+	for nodeAddr, node := range s.nodes {
 		// 跳过客户端节点
-		if !s.isServerNode(uuid) {
+		if !s.isServerNode(node.NodeUuid) {
 			continue
 		}
 
-		if !knownUUIDs[uuid] {
-			// 新节点
+		if !knownAddrs[nodeAddr] {
+			// 新节点（通过 IP:Port 判断）
 			nodesToAdd = append(nodesToAdd, node)
 		} else {
 			// 检查是否需要更新
@@ -1124,16 +1218,31 @@ func (s *Server) notifyNodesAboutNewNode(newNode *tasksmanager.GrpcServerNodeInf
 
 	// 向所有已连接的节点发送新节点信息
 	// 每个 goroutine 使用独立的 context，避免互相影响
-	for nodeUUID, client := range connectedNodes {
-		go func(uuid string, c tasksmanager.TasksManagerClient) {
+	for nodeAddr, client := range connectedNodes {
+		go func(addr string, c tasksmanager.TasksManagerClient) {
+			// 获取节点信息（用于日志）
+			s.nodesMu.RLock()
+			var nodeInfo *tasksmanager.GrpcServerNodeInfo
+			for _, node := range s.nodes {
+				if s.getNodeAddr(node) == addr {
+					nodeInfo = node
+					break
+				}
+			}
+			s.nodesMu.RUnlock()
 			// 为每个通知创建独立的 context
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 
+			toNodeUUID := ""
+			if nodeInfo != nil {
+				toNodeUUID = nodeInfo.NodeUuid
+			}
+
 			msg := &tasksmanager.NodeMessage{
 				MessageId:    fmt.Sprintf("new-node-%s-%d", newNode.NodeUuid, time.Now().Unix()),
 				FromNodeUuid: s.nodeID,
-				ToNodeUuid:   uuid, // 点对点消息
+				ToNodeUuid:   toNodeUUID, // 点对点消息
 				MessageType:  "NODE_DISCOVERED",
 				Payload:      []byte(fmt.Sprintf(`{"node_uuid":"%s","node_ip":"%s","node_port":"%s"}`, newNode.NodeUuid, newNode.NodeIp, newNode.NodePort)),
 				Timestamp:    time.Now().UnixMilli(),
@@ -1146,11 +1255,11 @@ func (s *Server) notifyNodesAboutNewNode(newNode *tasksmanager.GrpcServerNodeInf
 			_, err := c.SendNodeMessage(ctx, req)
 			if err != nil {
 				// 通知失败不应该影响节点状态，只记录调试日志
-				s.logger.Debug("通知节点 %s 新节点信息失败（非致命）: %v", uuid, err)
+				s.logger.Debug("通知节点 %s 新节点信息失败（非致命）: %v", addr, err)
 			} else {
-				s.logger.Debug("已通知节点 %s 新节点加入: %s", uuid, newNode.NodeUuid)
+				s.logger.Debug("已通知节点 %s 新节点加入: %s (UUID: %s)", addr, s.getNodeAddr(newNode), newNode.NodeUuid)
 			}
-		}(nodeUUID, client)
+		}(nodeAddr, client)
 	}
 }
 
@@ -1166,19 +1275,20 @@ func (s *Server) startHeartbeatChecker() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
+	selfAddr := s.getSelfAddr()
 	for range ticker.C {
 		now := time.Now()
 		s.nodesMu.Lock()
-		for uuid, node := range s.nodes {
+		for nodeAddr, node := range s.nodes {
 			// 跳过自己
-			if uuid == s.nodeID {
+			if nodeAddr == selfAddr {
 				continue
 			}
 
 			// 检查节点是否超时（90秒未收到心跳，放宽超时时间）
 			lastActive, err := time.Parse(time.RFC3339, node.NodeLastActiveTime)
 			if err == nil && now.Sub(lastActive) > 90*time.Second {
-				s.logger.Warn("节点超时，可能已离线: %s (最后活跃: %s)", uuid, node.NodeLastActiveTime)
+				s.logger.Warn("节点超时，可能已离线: %s (UUID: %s, 最后活跃: %s)", nodeAddr, node.NodeUuid, node.NodeLastActiveTime)
 				// 注意：这里只记录警告，不自动移除节点，因为可能是网络波动
 				// 节点会在下次心跳时自动恢复
 			}
