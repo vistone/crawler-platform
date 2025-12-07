@@ -23,104 +23,225 @@ import (
 )
 
 func main() {
-	// 解析命令行参数
-	serverAddr := flag.String("server", "localhost:50051", "gRPC 服务器地址")
-	clientName := flag.String("name", "client-1", "客户端名称")
-	certsDir := flag.String("certs", "certs", "证书目录路径（包含 .pem 证书和密钥文件）")
-	insecureMode := flag.Bool("insecure", false, "使用非加密连接（不启用 TLS）")
-	tileKey := flag.String("tilekey", "0", "瓦片键（TileKey），如 q2 数据的瓦片键")
-	epoch := flag.Int("epoch", 1029, "主版本号（Epoch）")
-	taskType := flag.String("tasktype", "q2", "任务类型: q2, imagery, terrain")
-	repeatCount := flag.Int("repeat", 100, "重复请求次数（用于性能测试，验证连接复用效果）")
-	concurrency := flag.Int("concurrency", 100, "并发请求数量（用于高并发测试）")
+	// 解析命令行参数（配置文件路径和其他覆盖选项）
+	configPath := flag.String("config", "", "配置文件路径（默认: ./cmd/grpcclient/config.toml 或 ./config.toml）")
+	protocolType := flag.String("protocol", "", "协议类型: grpc, tuic（覆盖配置文件）")
+	serverAddr := flag.String("server", "", "服务器地址（覆盖配置文件）")
+	clientName := flag.String("name", "", "客户端名称（覆盖配置文件）")
+	certsDir := flag.String("certs", "", "证书目录路径（覆盖配置文件）")
+	insecureMode := flag.Bool("insecure", false, "使用非加密连接（覆盖配置文件，仅 gRPC）")
+	tuicUUID := flag.String("uuid", "", "TUIC UUID（覆盖配置文件，用于真正的 TUIC 协议）")
+	tuicPassword := flag.String("password", "", "TUIC 密码（覆盖配置文件，用于真正的 TUIC 协议）")
+	tileKey := flag.String("tilekey", "", "瓦片键（覆盖配置文件）")
+	epoch := flag.Int("epoch", 0, "主版本号（覆盖配置文件，0 表示使用配置文件的值）")
+	taskType := flag.String("tasktype", "", "任务类型（覆盖配置文件）")
+	repeatCount := flag.Int("repeat", 0, "重复请求次数（覆盖配置文件，0 表示使用配置文件的值）")
+	concurrency := flag.Int("concurrency", 0, "并发请求数量（覆盖配置文件，0 表示使用配置文件的值）")
 	flag.Parse()
 
-	// 初始化日志记录器
-	logger.InitGlobalLogger(logger.NewConsoleLogger(true, true, true, true))
+	// 加载配置文件
+	cfg, err := LoadConfig(*configPath)
+	if err != nil {
+		log.Fatalf("加载配置文件失败: %v", err)
+	}
 
-	// 配置传输凭证
-	var transportCreds credentials.TransportCredentials
+	// 验证配置
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("配置验证失败: %v", err)
+	}
+
+	// 命令行参数覆盖配置文件（如果提供了）
+	if *protocolType != "" {
+		cfg.Protocol.Type = *protocolType
+	}
+	if *serverAddr != "" {
+		cfg.Server.Address = *serverAddr
+	}
+	if *clientName != "" {
+		cfg.Client.Name = *clientName
+	}
+	if *certsDir != "" {
+		cfg.Server.CertsDir = *certsDir
+	}
 	if *insecureMode {
-		transportCreds = insecure.NewCredentials()
-		log.Printf("使用非加密连接（insecure 模式）")
-	} else if *certsDir != "" {
-		tlsConfig, err := LoadTLSConfigFromCertsDir(*certsDir)
-		if err == nil {
-			transportCreds = credentials.NewTLS(tlsConfig)
-			log.Printf("已加载 TLS 证书，证书目录: %s", *certsDir)
+		cfg.Server.Insecure = true
+	}
+	if *tuicUUID != "" {
+		cfg.Server.UUID = *tuicUUID
+	}
+	if *tuicPassword != "" {
+		cfg.Server.Password = *tuicPassword
+	}
+	if *tileKey != "" {
+		cfg.Task.TileKey = *tileKey
+	}
+	if *epoch > 0 {
+		cfg.Task.Epoch = int32(*epoch)
+	}
+	if *taskType != "" {
+		cfg.Task.TaskType = *taskType
+	}
+	if *repeatCount > 0 {
+		cfg.Task.RepeatCount = *repeatCount
+	}
+	if *concurrency > 0 {
+		cfg.Task.Concurrency = *concurrency
+	}
+
+	// 初始化日志记录器（根据配置文件）
+	logger.InitGlobalLogger(logger.NewConsoleLogger(
+		cfg.Logger.EnableDebug,
+		cfg.Logger.EnableInfo,
+		cfg.Logger.EnableWarn,
+		cfg.Logger.EnableError,
+	))
+
+	if *configPath != "" {
+		log.Printf("已加载配置文件: %s", *configPath)
+	} else {
+		log.Println("使用默认配置（可通过 -config 指定配置文件）")
+	}
+
+	ctx := context.Background()
+
+	var client tasksmanager.TasksManagerClient
+	var conn *grpc.ClientConn
+	var dualClient *DualProtocolClient
+
+	// 根据协议类型创建客户端
+	switch cfg.Protocol.Type {
+	case "both":
+		// 双协议模式：优先使用 TUIC，失败时自动切换到 gRPC
+		var err error
+		dualClient, err = NewDualProtocolClient(cfg)
+		if err != nil {
+			log.Fatalf("创建双协议客户端失败: %v", err)
+		}
+		defer dualClient.Close()
+		client = dualClient
+	case "tuic":
+		// 仅使用 TUIC 客户端
+		var tuicClient TUICClient
+		if cfg.Server.UUID != "" {
+			singBoxClient, err := NewSingBoxTUICClient(cfg.Server.TUICAddress, cfg.Server.UUID, cfg.Server.Password)
+			if err != nil {
+				log.Printf("创建 sing-box TUIC 客户端失败: %v，将使用 HTTP 接口模式", err)
+				tuicClient = NewHTTPTUICClient(cfg.Server.TUICAddress)
+				log.Printf("已创建 TUIC 客户端（HTTP 接口模式），连接到: %s", cfg.Server.TUICAddress)
+			} else {
+				tuicClient = singBoxClient
+				log.Printf("已创建 sing-box TUIC 客户端，连接到: %s (UUID: %s)", cfg.Server.TUICAddress, cfg.Server.UUID)
+			}
+		} else {
+			tuicClient = NewHTTPTUICClient(cfg.Server.TUICAddress)
+			log.Printf("已创建 TUIC 客户端（HTTP 接口模式），连接到: %s", cfg.Server.TUICAddress)
+		}
+		client = newTUICClientAdapter(tuicClient)
+	case "grpc":
+		// 仅使用 gRPC 客户端
+		var transportCreds credentials.TransportCredentials
+		if cfg.Server.Insecure {
+			transportCreds = insecure.NewCredentials()
+			log.Printf("使用非加密连接（insecure 模式）")
+		} else if cfg.Server.CertsDir != "" {
+			tlsConfig, err := LoadTLSConfigFromCertsDir(cfg.Server.CertsDir)
+			if err == nil {
+				transportCreds = credentials.NewTLS(tlsConfig)
+				log.Printf("已加载 TLS 证书，证书目录: %s", cfg.Server.CertsDir)
+			} else {
+				transportCreds = insecure.NewCredentials()
+				log.Printf("加载 TLS 证书失败，使用非加密连接: %v", err)
+			}
 		} else {
 			transportCreds = insecure.NewCredentials()
-			log.Printf("加载 TLS 证书失败，使用非加密连接: %v", err)
+			log.Printf("未指定证书目录，使用非加密连接")
 		}
-	} else {
-		transportCreds = insecure.NewCredentials()
-		log.Printf("未指定证书目录，使用非加密连接")
-	}
 
-	// 连接到服务器
-	conn, err := grpc.NewClient(*serverAddr, grpc.WithTransportCredentials(transportCreds))
-	if err != nil {
-		log.Fatalf("连接服务器失败: %v", err)
-	}
-	defer conn.Close()
+		var err error
+		conn, err = grpc.NewClient(cfg.Server.GRPCAddress, grpc.WithTransportCredentials(transportCreds))
+		if err != nil {
+			log.Fatalf("连接服务器失败: %v", err)
+		}
+		defer func() {
+			if conn != nil {
+				conn.Close()
+			}
+		}()
 
-	// 创建客户端
-	client := tasksmanager.NewTasksManagerClient(conn)
-	ctx := context.Background()
+		client = tasksmanager.NewTasksManagerClient(conn)
+		log.Printf("已创建 gRPC 客户端，连接到: %s", cfg.Server.GRPCAddress)
+	default:
+		log.Fatalf("不支持的协议类型: %s (支持: grpc, tuic, both)", cfg.Protocol.Type)
+	}
 
 	// 提交真实数据请求
 	log.Printf("=== 提交真实数据请求 ===")
-	log.Printf("任务类型: %s, TileKey: %s, epoch: %d, 重复次数: %d, 并发数: %d", *taskType, *tileKey, *epoch, *repeatCount, *concurrency)
-	if *repeatCount > 1 {
-		if err := submitRealTaskMultipleTimes(ctx, client, *clientName, *taskType, *tileKey, int32(*epoch), *repeatCount, *concurrency); err != nil {
+	log.Printf("任务类型: %s, TileKey: %s, epoch: %d, 重复次数: %d, 并发数: %d",
+		cfg.Task.TaskType, cfg.Task.TileKey, cfg.Task.Epoch, cfg.Task.RepeatCount, cfg.Task.Concurrency)
+	if cfg.Task.RepeatCount > 1 {
+		if err := submitRealTaskMultipleTimes(ctx, client, cfg.Client.Name, cfg.Task.TaskType, cfg.Task.TileKey, cfg.Task.Epoch, cfg.Task.RepeatCount, cfg.Task.Concurrency); err != nil {
 			log.Fatalf("批量提交任务失败: %v", err)
 		}
 	} else {
-		if err := submitRealTask(ctx, client, *clientName, *taskType, *tileKey, int32(*epoch)); err != nil {
+		if err := submitRealTask(ctx, client, cfg.Client.Name, cfg.Task.TaskType, cfg.Task.TileKey, cfg.Task.Epoch); err != nil {
 			log.Fatalf("提交任务失败: %v", err)
 		}
 	}
 
-	// 测试客户端注册
-	log.Println("\n=== 客户端注册 ===")
-	clientID, regResp, err := testNodeManagementWithResponse(ctx, client, *clientName)
-	if err != nil {
-		log.Printf("客户端注册失败: %v", err)
-		return
-	}
-
-	// 创建节点管理器（用于管理到服务器节点的连接）
-	// 传递 TLS 配置以便连接到其他节点时使用
-	var nodeManagerTLSConfig *tls.Config
-	if *certsDir != "" {
-		if config, err := LoadTLSConfigFromCertsDir(*certsDir); err == nil {
-			nodeManagerTLSConfig = config
+	// 如果是 TUIC 协议或双协议模式，跳过 gRPC 特有的功能（节点管理、心跳等）
+	// 注意：双协议模式下，如果切换到 gRPC，这些功能仍然不可用（因为使用的是适配器）
+	if cfg.Protocol.Type == "tuic" || cfg.Protocol.Type == "both" {
+		log.Println("\n=== TUIC 协议模式 ===")
+		if cfg.Protocol.Type == "both" {
+			log.Println("双协议模式: 优先使用 TUIC 协议，失败时自动切换到 gRPC 协议")
+		} else {
+			log.Println("提示: TUIC 协议当前使用 HTTP 接口模式，不支持节点管理和心跳功能")
 		}
+		log.Println("任务提交功能已测试完成")
+	} else {
+		// gRPC 协议：执行完整的客户端注册和节点管理流程
+		// 测试客户端注册
+		log.Println("\n=== 客户端注册 ===")
+		clientID, regResp, err := testNodeManagementWithResponse(ctx, client, cfg.Client.Name)
+		if err != nil {
+			log.Printf("客户端注册失败: %v", err)
+			return
+		}
+
+		// 创建节点管理器（用于管理到服务器节点的连接）
+		// 传递 TLS 配置以便连接到其他节点时使用
+		var nodeManagerTLSConfig *tls.Config
+		if cfg.Server.CertsDir != "" {
+			if config, err := LoadTLSConfigFromCertsDir(cfg.Server.CertsDir); err == nil {
+				nodeManagerTLSConfig = config
+			}
+		}
+		// 注意：nodeManager 需要 conn，但 TUIC 模式下 conn 为 nil，所以这里只在 gRPC 模式下执行
+		nodeManager := NewNodeManagerWithTLS(client, conn, clientID, nodeManagerTLSConfig)
+		defer nodeManager.Close()
+
+		// 处理注册响应，自动连接到所有服务器节点
+		if regResp != nil && regResp.Success && len(regResp.ServerNodes) > 0 {
+			log.Printf("📡 发现 %d 个服务器节点，开始自动连接", len(regResp.ServerNodes))
+			nodeManager.OnNodesDiscovered(regResp.ServerNodes)
+		}
+
+		// 启动自动发现
+		log.Println("\n=== 启动自动节点发现 ===")
+		discoveryCtx, cancelDiscovery := context.WithCancel(context.Background())
+		defer cancelDiscovery()
+		go nodeManager.StartAutoDiscovery(discoveryCtx)
+
+		// 启动连接池健康检查
+		log.Println("\n=== 启动连接池健康检查 ===")
+		healthCtx, cancelHealth := context.WithCancel(context.Background())
+		defer cancelHealth()
+		go nodeManager.StartConnectionHealthCheck(healthCtx)
+
+		// 启动客户端心跳（包含自动连接新服务器节点功能）
+		log.Println("\n=== 启动客户端心跳（自动发现新服务器节点）===")
+		go startHeartbeatWithNodeManager(ctx, client, cfg.Client.Name, clientID, nodeManager)
 	}
-	nodeManager := NewNodeManagerWithTLS(client, conn, clientID, nodeManagerTLSConfig)
-	defer nodeManager.Close()
-
-	// 处理注册响应，自动连接到所有服务器节点
-	if regResp != nil && regResp.Success && len(regResp.ServerNodes) > 0 {
-		log.Printf("📡 发现 %d 个服务器节点，开始自动连接", len(regResp.ServerNodes))
-		nodeManager.OnNodesDiscovered(regResp.ServerNodes)
-	}
-
-	// 启动自动发现
-	log.Println("\n=== 启动自动节点发现 ===")
-	discoveryCtx, cancelDiscovery := context.WithCancel(context.Background())
-	defer cancelDiscovery()
-	go nodeManager.StartAutoDiscovery(discoveryCtx)
-
-	// 启动连接池健康检查
-	log.Println("\n=== 启动连接池健康检查 ===")
-	healthCtx, cancelHealth := context.WithCancel(context.Background())
-	defer cancelHealth()
-	go nodeManager.StartConnectionHealthCheck(healthCtx)
-
-	// 启动客户端心跳（包含自动连接新服务器节点功能）
-	log.Println("\n=== 启动客户端心跳（自动发现新服务器节点）===")
-	go startHeartbeatWithNodeManager(ctx, client, *clientName, clientID, nodeManager)
 
 	// 等待中断信号
 	quit := make(chan os.Signal, 1)

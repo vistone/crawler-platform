@@ -88,6 +88,15 @@ type Server struct {
 	googleEarthDesktopDataQ2Path      string
 	googleEarthDesktopDataImageryPath string
 	googleEarthDesktopDataTerrainPath string
+
+	// TUIC 服务器配置（用于 GetTUICConfig RPC）
+	tuicEnabled    bool
+	tuicAddress    string
+	tuicPort       string
+	tuicUUID       string
+	tuicPassword   string
+	tuicCongestion string
+	tuicConfigMu   sync.RWMutex
 }
 
 // IPPoolInterface 定义 IP 池接口（与 localippool.IPPool 接口兼容，避免循环导入）
@@ -144,6 +153,43 @@ func (s *Server) SetBootstrapNodes(addresses []string) {
 			}
 		}()
 	}
+}
+
+// SetTUICConfig 设置 TUIC 服务器配置（用于 GetTUICConfig RPC）
+func (s *Server) SetTUICConfig(enabled bool, address, port, uuid, password, congestion string) {
+	s.tuicConfigMu.Lock()
+	defer s.tuicConfigMu.Unlock()
+	s.tuicEnabled = enabled
+	s.tuicAddress = address
+	s.tuicPort = port
+	s.tuicUUID = uuid
+	s.tuicPassword = password
+	s.tuicCongestion = congestion
+}
+
+// GetTUICConfig 获取 TUIC 服务器配置
+func (s *Server) GetTUICConfig(ctx context.Context, req *tasksmanager.TUICConfigRequest) (*tasksmanager.TUICConfigResponse, error) {
+	s.tuicConfigMu.RLock()
+	defer s.tuicConfigMu.RUnlock()
+
+	if !s.tuicEnabled {
+		return &tasksmanager.TUICConfigResponse{
+			Success: true,
+			Message: "TUIC 服务器未启用",
+			Enabled: false,
+		}, nil
+	}
+
+	return &tasksmanager.TUICConfigResponse{
+		Success:    true,
+		Message:    "TUIC 配置获取成功",
+		Enabled:    true,
+		Address:    s.tuicAddress,
+		Port:       s.tuicPort,
+		Uuid:       s.tuicUUID,
+		Password:   s.tuicPassword,
+		Congestion: s.tuicCongestion,
+	}, nil
 }
 
 // SetIPPool 设置本地 IP 池

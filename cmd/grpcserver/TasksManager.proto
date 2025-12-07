@@ -261,6 +261,23 @@ message TaskResponse {
   optional int32 task_response_status_code = 7; // HTTP 响应状态码（可选，如 200、404、500 等）
 }
 
+// TUICConfigRequest TUIC 配置请求（空请求）
+message TUICConfigRequest {
+  // 空请求，不需要参数
+}
+
+// TUICConfigResponse TUIC 配置响应
+message TUICConfigResponse {
+  bool success = 1;              // 是否成功
+  string message = 2;            // 响应消息
+  bool enabled = 3;              // TUIC 服务器是否启用
+  string address = 4;            // TUIC 服务器地址
+  string port = 5;               // TUIC 服务器端口
+  string uuid = 6;               // TUIC UUID（用于客户端连接）
+  string password = 7;           // TUIC 密码（用于客户端连接）
+  string congestion = 8;         // 拥塞控制算法
+}
+
 // TasksManager 任务管理器 gRPC 服务
 // 提供任务客户端管理、服务器节点管理和任务执行等功能
 // 支持去中心化架构，每个节点既是服务器也是客户端，可以相互通信
@@ -274,6 +291,11 @@ service TasksManager {
   // 返回所有 gRPC 服务器节点的信息列表
   // 包括节点的基本信息、系统信息、运行状态等
   rpc GetGrpcServerNodeInfoList(GrpcServerNodeInfoListRequest) returns (GrpcServerNodeInfoListResponse);
+  
+  // GetTUICConfig 获取 TUIC 服务器配置信息
+  // 返回 TUIC 服务器的 UUID 和密码，用于客户端自动连接
+  // 客户端可以通过此接口获取服务器自动生成的 UUID 和密码，实现无缝连接
+  rpc GetTUICConfig(TUICConfigRequest) returns (TUICConfigResponse);
   
   // SubmitTask 提交任务请求
   // 向指定的任务客户端提交一个新的 HTTP 任务请求

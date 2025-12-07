@@ -1,4 +1,0 @@
-https://kh.google.com/rt/earth/PlanetoidMetadata
-https://kh.google.com/rt/earth/BulkMetadata/pb=!1m2!1s!2u1003
-https://kh.google.com/rt/earth/NodeData/pb=!1m2!1s21!2u1002!2e1!3u1028!4b0
-https://kh.google.com/rt/earth/NodeData/pb=!1m2!1s12!2u1002!2e1!3u1028!4b0

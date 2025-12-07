@@ -1725,6 +1725,144 @@ func (x *TaskResponse) GetTaskResponseStatusCode() int32 {
 	return 0
 }
 
+// TUICConfigRequest TUIC 配置请求（空请求）
+type TUICConfigRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TUICConfigRequest) Reset() {
+	*x = TUICConfigRequest{}
+	mi := &file_TasksManager_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TUICConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TUICConfigRequest) ProtoMessage() {}
+
+func (x *TUICConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_TasksManager_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TUICConfigRequest.ProtoReflect.Descriptor instead.
+func (*TUICConfigRequest) Descriptor() ([]byte, []int) {
+	return file_TasksManager_proto_rawDescGZIP(), []int{19}
+}
+
+// TUICConfigResponse TUIC 配置响应
+type TUICConfigResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`      // 是否成功
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`       // 响应消息
+	Enabled       bool                   `protobuf:"varint,3,opt,name=enabled,proto3" json:"enabled,omitempty"`      // TUIC 服务器是否启用
+	Address       string                 `protobuf:"bytes,4,opt,name=address,proto3" json:"address,omitempty"`       // TUIC 服务器地址
+	Port          string                 `protobuf:"bytes,5,opt,name=port,proto3" json:"port,omitempty"`             // TUIC 服务器端口
+	Uuid          string                 `protobuf:"bytes,6,opt,name=uuid,proto3" json:"uuid,omitempty"`             // TUIC UUID（用于客户端连接）
+	Password      string                 `protobuf:"bytes,7,opt,name=password,proto3" json:"password,omitempty"`     // TUIC 密码（用于客户端连接）
+	Congestion    string                 `protobuf:"bytes,8,opt,name=congestion,proto3" json:"congestion,omitempty"` // 拥塞控制算法
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TUICConfigResponse) Reset() {
+	*x = TUICConfigResponse{}
+	mi := &file_TasksManager_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TUICConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TUICConfigResponse) ProtoMessage() {}
+
+func (x *TUICConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_TasksManager_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TUICConfigResponse.ProtoReflect.Descriptor instead.
+func (*TUICConfigResponse) Descriptor() ([]byte, []int) {
+	return file_TasksManager_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *TUICConfigResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *TUICConfigResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *TUICConfigResponse) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *TUICConfigResponse) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
+func (x *TUICConfigResponse) GetPort() string {
+	if x != nil {
+		return x.Port
+	}
+	return ""
+}
+
+func (x *TUICConfigResponse) GetUuid() string {
+	if x != nil {
+		return x.Uuid
+	}
+	return ""
+}
+
+func (x *TUICConfigResponse) GetPassword() string {
+	if x != nil {
+		return x.Password
+	}
+	return ""
+}
+
+func (x *TUICConfigResponse) GetCongestion() string {
+	if x != nil {
+		return x.Congestion
+	}
+	return ""
+}
+
 var File_TasksManager_proto protoreflect.FileDescriptor
 
 const file_TasksManager_proto_rawDesc = "" +
@@ -1871,7 +2009,19 @@ const file_TasksManager_proto_rawDesc = "" +
 	"\x19task_response_status_code\x18\a \x01(\x05H\x02R\x16taskResponseStatusCode\x88\x01\x01B\x0f\n" +
 	"\r_imageryEpochB\x15\n" +
 	"\x13_task_response_bodyB\x1c\n" +
-	"\x1a_task_response_status_code*\xb5\x02\n" +
+	"\x1a_task_response_status_code\"\x13\n" +
+	"\x11TUICConfigRequest\"\xe0\x01\n" +
+	"\x12TUICConfigResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12\x18\n" +
+	"\aenabled\x18\x03 \x01(\bR\aenabled\x12\x18\n" +
+	"\aaddress\x18\x04 \x01(\tR\aaddress\x12\x12\n" +
+	"\x04port\x18\x05 \x01(\tR\x04port\x12\x12\n" +
+	"\x04uuid\x18\x06 \x01(\tR\x04uuid\x12\x1a\n" +
+	"\bpassword\x18\a \x01(\tR\bpassword\x12\x1e\n" +
+	"\n" +
+	"congestion\x18\b \x01(\tR\n" +
+	"congestion*\xb5\x02\n" +
 	"\bTaskType\x12\x15\n" +
 	"\x11TASK_TYPE_UNKNOWN\x10\x00\x121\n" +
 	"-TASK_TYPE_GOOGLE_EARTH_ROCKTREE_BULK_METADATA\x10\x01\x12-\n" +
@@ -1906,10 +2056,11 @@ const file_TasksManager_proto_rawDesc = "" +
 	"\x12TASK_METHOD_DELETE\x10\x03\x12\x15\n" +
 	"\x11TASK_METHOD_PATCH\x10\x04\x12\x14\n" +
 	"\x10TASK_METHOD_HEAD\x10\x05\x12\x17\n" +
-	"\x13TASK_METHOD_OPTIONS\x10\x062\xcd\x06\n" +
+	"\x13TASK_METHOD_OPTIONS\x10\x062\xa1\a\n" +
 	"\fTasksManager\x12j\n" +
 	"\x15GetTaskClientInfoList\x12'.tasksmanager.TaskClientInfoListRequest\x1a(.tasksmanager.TaskClientInfoListResponse\x12v\n" +
-	"\x19GetGrpcServerNodeInfoList\x12+.tasksmanager.GrpcServerNodeInfoListRequest\x1a,.tasksmanager.GrpcServerNodeInfoListResponse\x12C\n" +
+	"\x19GetGrpcServerNodeInfoList\x12+.tasksmanager.GrpcServerNodeInfoListRequest\x1a,.tasksmanager.GrpcServerNodeInfoListResponse\x12R\n" +
+	"\rGetTUICConfig\x12\x1f.tasksmanager.TUICConfigRequest\x1a .tasksmanager.TUICConfigResponse\x12C\n" +
 	"\n" +
 	"SubmitTask\x12\x19.tasksmanager.TaskRequest\x1a\x1a.tasksmanager.TaskResponse\x12T\n" +
 	"\x0eRegisterClient\x12\x1c.tasksmanager.TaskClientInfo\x1a$.tasksmanager.RegisterClientResponse\x12V\n" +
@@ -1932,7 +2083,7 @@ func file_TasksManager_proto_rawDescGZIP() []byte {
 }
 
 var file_TasksManager_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_TasksManager_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
+var file_TasksManager_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_TasksManager_proto_goTypes = []any{
 	(TaskType)(0),                          // 0: tasksmanager.TaskType
 	(TasksStatus)(0),                       // 1: tasksmanager.TasksStatus
@@ -1958,6 +2109,8 @@ var file_TasksManager_proto_goTypes = []any{
 	(*SyncNodeListResponse)(nil),           // 21: tasksmanager.SyncNodeListResponse
 	(*TaskRequest)(nil),                    // 22: tasksmanager.TaskRequest
 	(*TaskResponse)(nil),                   // 23: tasksmanager.TaskResponse
+	(*TUICConfigRequest)(nil),              // 24: tasksmanager.TUICConfigRequest
+	(*TUICConfigResponse)(nil),             // 25: tasksmanager.TUICConfigResponse
 }
 var file_TasksManager_proto_depIdxs = []int32{
 	3,  // 0: tasksmanager.TaskClientInfo.client_task_status:type_name -> tasksmanager.ClientTaskStatus
@@ -1978,24 +2131,26 @@ var file_TasksManager_proto_depIdxs = []int32{
 	0,  // 15: tasksmanager.TaskResponse.task_type:type_name -> tasksmanager.TaskType
 	6,  // 16: tasksmanager.TasksManager.GetTaskClientInfoList:input_type -> tasksmanager.TaskClientInfoListRequest
 	11, // 17: tasksmanager.TasksManager.GetGrpcServerNodeInfoList:input_type -> tasksmanager.GrpcServerNodeInfoListRequest
-	22, // 18: tasksmanager.TasksManager.SubmitTask:input_type -> tasksmanager.TaskRequest
-	5,  // 19: tasksmanager.TasksManager.RegisterClient:input_type -> tasksmanager.TaskClientInfo
-	5,  // 20: tasksmanager.TasksManager.ClientHeartbeat:input_type -> tasksmanager.TaskClientInfo
-	13, // 21: tasksmanager.TasksManager.RegisterNode:input_type -> tasksmanager.NodeRegistrationRequest
-	15, // 22: tasksmanager.TasksManager.NodeHeartbeat:input_type -> tasksmanager.NodeHeartbeatRequest
-	18, // 23: tasksmanager.TasksManager.SendNodeMessage:input_type -> tasksmanager.NodeMessageRequest
-	20, // 24: tasksmanager.TasksManager.SyncNodeList:input_type -> tasksmanager.SyncNodeListRequest
-	7,  // 25: tasksmanager.TasksManager.GetTaskClientInfoList:output_type -> tasksmanager.TaskClientInfoListResponse
-	12, // 26: tasksmanager.TasksManager.GetGrpcServerNodeInfoList:output_type -> tasksmanager.GrpcServerNodeInfoListResponse
-	23, // 27: tasksmanager.TasksManager.SubmitTask:output_type -> tasksmanager.TaskResponse
-	8,  // 28: tasksmanager.TasksManager.RegisterClient:output_type -> tasksmanager.RegisterClientResponse
-	9,  // 29: tasksmanager.TasksManager.ClientHeartbeat:output_type -> tasksmanager.ClientHeartbeatResponse
-	14, // 30: tasksmanager.TasksManager.RegisterNode:output_type -> tasksmanager.NodeRegistrationResponse
-	16, // 31: tasksmanager.TasksManager.NodeHeartbeat:output_type -> tasksmanager.NodeHeartbeatResponse
-	19, // 32: tasksmanager.TasksManager.SendNodeMessage:output_type -> tasksmanager.NodeMessageResponse
-	21, // 33: tasksmanager.TasksManager.SyncNodeList:output_type -> tasksmanager.SyncNodeListResponse
-	25, // [25:34] is the sub-list for method output_type
-	16, // [16:25] is the sub-list for method input_type
+	24, // 18: tasksmanager.TasksManager.GetTUICConfig:input_type -> tasksmanager.TUICConfigRequest
+	22, // 19: tasksmanager.TasksManager.SubmitTask:input_type -> tasksmanager.TaskRequest
+	5,  // 20: tasksmanager.TasksManager.RegisterClient:input_type -> tasksmanager.TaskClientInfo
+	5,  // 21: tasksmanager.TasksManager.ClientHeartbeat:input_type -> tasksmanager.TaskClientInfo
+	13, // 22: tasksmanager.TasksManager.RegisterNode:input_type -> tasksmanager.NodeRegistrationRequest
+	15, // 23: tasksmanager.TasksManager.NodeHeartbeat:input_type -> tasksmanager.NodeHeartbeatRequest
+	18, // 24: tasksmanager.TasksManager.SendNodeMessage:input_type -> tasksmanager.NodeMessageRequest
+	20, // 25: tasksmanager.TasksManager.SyncNodeList:input_type -> tasksmanager.SyncNodeListRequest
+	7,  // 26: tasksmanager.TasksManager.GetTaskClientInfoList:output_type -> tasksmanager.TaskClientInfoListResponse
+	12, // 27: tasksmanager.TasksManager.GetGrpcServerNodeInfoList:output_type -> tasksmanager.GrpcServerNodeInfoListResponse
+	25, // 28: tasksmanager.TasksManager.GetTUICConfig:output_type -> tasksmanager.TUICConfigResponse
+	23, // 29: tasksmanager.TasksManager.SubmitTask:output_type -> tasksmanager.TaskResponse
+	8,  // 30: tasksmanager.TasksManager.RegisterClient:output_type -> tasksmanager.RegisterClientResponse
+	9,  // 31: tasksmanager.TasksManager.ClientHeartbeat:output_type -> tasksmanager.ClientHeartbeatResponse
+	14, // 32: tasksmanager.TasksManager.RegisterNode:output_type -> tasksmanager.NodeRegistrationResponse
+	16, // 33: tasksmanager.TasksManager.NodeHeartbeat:output_type -> tasksmanager.NodeHeartbeatResponse
+	19, // 34: tasksmanager.TasksManager.SendNodeMessage:output_type -> tasksmanager.NodeMessageResponse
+	21, // 35: tasksmanager.TasksManager.SyncNodeList:output_type -> tasksmanager.SyncNodeListResponse
+	26, // [26:36] is the sub-list for method output_type
+	16, // [16:26] is the sub-list for method input_type
 	16, // [16:16] is the sub-list for extension type_name
 	16, // [16:16] is the sub-list for extension extendee
 	0,  // [0:16] is the sub-list for field type_name
@@ -2017,7 +2172,7 @@ func file_TasksManager_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_TasksManager_proto_rawDesc), len(file_TasksManager_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   19,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

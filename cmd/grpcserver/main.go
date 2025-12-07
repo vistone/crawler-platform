@@ -12,8 +12,11 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func main() {
@@ -286,12 +289,207 @@ func main() {
 
 	log.Println("已设置任务执行配置到服务器")
 
-	// 启动服务器（在 goroutine 中）
-	go func() {
-		if err := srv.Start(); err != nil {
-			log.Fatalf("服务器启动失败: %v", err)
+	// 创建共享的任务执行器（等待 utlsClient 准备好）
+	// 注意：这里需要等待 utlsClient 初始化完成
+	var taskExecutor server.TaskExecutor
+	var tuicServer *server.TUICServer
+
+	// 根据协议配置决定启动哪个服务器
+	protocolType := config.Protocol.Type
+	enableGRPC := protocolType == "grpc" || protocolType == "both"
+	enableTUIC := (protocolType == "tuic" || protocolType == "both") && config.TUIC.Enable
+
+	log.Printf("协议配置: %s (gRPC: %v, TUIC: %v)", protocolType, enableGRPC, enableTUIC)
+
+	// 等待 utlsClient 初始化完成（如果启用且需要）
+	if enableTUIC || enableGRPC {
+		// 如果启用了域名监控，需要等待 UTLS 客户端初始化
+		if config.DomainMonitor.Enable && len(config.DNSDomain.HostName) > 0 {
+			log.Println("等待 UTLS 客户端初始化完成...")
+			maxWait := 60 * time.Second
+			interval := 1 * time.Second
+			start := time.Now()
+			for utlsClient == nil {
+				if time.Since(start) > maxWait {
+					log.Fatal("等待 UTLS 客户端初始化超时")
+				}
+				time.Sleep(interval)
+			}
+			log.Println("UTLS 客户端已初始化")
+		} else {
+			// 如果没有启用域名监控，等待一小段时间即可
+			time.Sleep(1 * time.Second)
 		}
-	}()
+	}
+
+	// 创建共享的任务执行器
+	if utlsClient != nil {
+		taskExecutor = server.NewDefaultTaskExecutor(
+			utlsClient,
+			logger.GetGlobalLogger(),
+			config.RockTreeData.Enable,
+			config.RockTreeData.HostName,
+			config.RockTreeData.BulkMetadataPath,
+			config.RockTreeData.NodeDataPath,
+			config.RockTreeData.ImageryDataPath,
+			config.GoogleEarthDesktopData.Enable,
+			config.GoogleEarthDesktopData.HostName,
+			config.GoogleEarthDesktopData.Q2Path,
+			config.GoogleEarthDesktopData.ImageryPath,
+			config.GoogleEarthDesktopData.TerrainPath,
+		)
+		log.Println("已创建共享任务执行器")
+	} else if enableTUIC {
+		// 如果启用了 TUIC 但没有 UTLS 客户端，这是错误
+		log.Fatal("TUIC 服务器需要任务执行器，但 UTLS 客户端未初始化（请启用 DomainMonitor 或等待客户端初始化）")
+	}
+
+	// 启动 gRPC 服务器（如果启用）
+	if enableGRPC {
+		go func() {
+			if err := srv.Start(); err != nil {
+				log.Fatalf("gRPC 服务器启动失败: %v", err)
+			}
+		}()
+		log.Printf("gRPC 服务器已启动在 %s:%s", config.Server.Address, config.Server.Port)
+	}
+
+	// 启动 TUIC 服务器（如果启用）
+	if enableTUIC {
+		if taskExecutor == nil {
+			log.Fatal("TUIC 服务器需要任务执行器，但 UTLS 客户端未初始化")
+		}
+		// 获取 TLS 证书路径（用于 sing-box TUIC 服务器）
+		tlsCertPath := config.TUIC.TLSCertPath
+		tlsKeyPath := config.TUIC.TLSKeyPath
+
+		// 如果配置中没有指定，尝试从 certs 目录查找
+		if tlsCertPath == "" || tlsKeyPath == "" {
+			certsDir := config.GetCertsDir()
+			if certsDir != "" {
+				// 尝试查找 cert.pem 或 server.crt
+				if _, err := os.Stat(filepath.Join(certsDir, "cert.pem")); err == nil {
+					if tlsCertPath == "" {
+						tlsCertPath = filepath.Join(certsDir, "cert.pem")
+					}
+					if tlsKeyPath == "" {
+						tlsKeyPath = filepath.Join(certsDir, "key.pem")
+					}
+				} else if _, err := os.Stat(filepath.Join(certsDir, "server.crt")); err == nil {
+					if tlsCertPath == "" {
+						tlsCertPath = filepath.Join(certsDir, "server.crt")
+					}
+					if tlsKeyPath == "" {
+						tlsKeyPath = filepath.Join(certsDir, "server.key")
+					}
+				}
+			}
+		}
+
+		// 自动生成 UUID 和密码（如果未配置）
+		tuicUUID := config.TUIC.UUID
+		tuicPassword := config.TUIC.Password
+		needSaveConfig := false
+
+		if tuicUUID == "" {
+			// 自动生成 UUID
+			uuidObj, err := uuid.NewRandom()
+			if err != nil {
+				log.Fatalf("生成 UUID 失败: %v", err)
+			}
+			tuicUUID = uuidObj.String()
+			log.Printf("自动生成 TUIC UUID: %s", tuicUUID)
+			needSaveConfig = true
+		} else {
+			log.Printf("使用配置文件中的 TUIC UUID: %s", tuicUUID)
+		}
+
+		if tuicPassword == "" {
+			// 自动生成密码
+			passwordObj, err := uuid.NewRandom()
+			if err != nil {
+				log.Fatalf("生成密码失败: %v", err)
+			}
+			tuicPassword = passwordObj.String()
+			log.Printf("自动生成 TUIC 密码: %s", tuicPassword)
+			needSaveConfig = true
+		} else {
+			log.Printf("使用配置文件中的 TUIC 密码: %s", tuicPassword)
+		}
+
+		// 如果生成了新的 UUID 或密码，保存到配置文件
+		if needSaveConfig && configPath != "" {
+			if err := SaveTUICConfig(configPath, tuicUUID, tuicPassword); err != nil {
+				log.Printf("警告: 保存 UUID 和密码到配置文件失败: %v", err)
+				log.Printf("提示: 请手动将以下配置添加到 %s 的 [tuic] 部分:", configPath)
+				log.Printf("  uuid = \"%s\"", tuicUUID)
+				log.Printf("  password = \"%s\"", tuicPassword)
+			} else {
+				log.Printf("已自动保存 UUID 和密码到配置文件: %s", configPath)
+				log.Printf("下次启动时将使用配置文件中的 UUID 和密码，无需重新生成")
+			}
+		}
+
+		// 检查证书文件是否存在
+		if tlsCertPath == "" || tlsKeyPath == "" {
+			log.Fatalf("TUIC 服务器需要 TLS 证书，但未找到证书文件。请确保 certs 目录下有 cert.pem 和 key.pem")
+		}
+		if _, err := os.Stat(tlsCertPath); os.IsNotExist(err) {
+			log.Fatalf("TLS 证书文件不存在: %s", tlsCertPath)
+		}
+		if _, err := os.Stat(tlsKeyPath); os.IsNotExist(err) {
+			log.Fatalf("TLS 密钥文件不存在: %s", tlsKeyPath)
+		}
+
+		log.Printf("TUIC 服务器配置: UUID=%s, 证书=%s, 密钥=%s", tuicUUID, tlsCertPath, tlsKeyPath)
+
+		tuicServer = server.NewTUICServer(
+			config.TUIC.Address,
+			config.TUIC.Port,
+			config.TUIC.Token,
+			tuicUUID,
+			tuicPassword,
+			config.TUIC.Congestion,
+			tlsCertPath,
+			tlsKeyPath,
+			logger.GetGlobalLogger(),
+			taskExecutor,
+		)
+		go func() {
+			if err := tuicServer.Start(); err != nil {
+				log.Fatalf("TUIC 服务器启动失败: %v", err)
+			}
+		}()
+		log.Printf("TUIC 服务器配置信息:")
+		log.Printf("  - 地址: %s:%s", config.TUIC.Address, config.TUIC.Port)
+		log.Printf("  - UUID: %s", tuicUUID)
+		log.Printf("  - 密码: %s", tuicPassword)
+		log.Printf("  - 证书: %s", tlsCertPath)
+		log.Printf("  - 密钥: %s", tlsKeyPath)
+		log.Printf("提示: 客户端需要使用相同的 UUID 和密码连接")
+
+		// 设置 TUIC 配置到 gRPC 服务器，以便客户端可以通过 GetTUICConfig 获取
+		if enableGRPC && srv != nil {
+			srv.SetTUICConfig(
+				true, // enabled
+				config.TUIC.Address,
+				config.TUIC.Port,
+				tuicUUID,
+				tuicPassword,
+				config.TUIC.Congestion,
+			)
+			log.Printf("✅ 已设置 TUIC 配置到 gRPC 服务器，客户端可通过 GetTUICConfig 自动获取")
+			log.Printf("   - UUID: %s", tuicUUID)
+			log.Printf("   - 密码: %s", tuicPassword)
+		} else {
+			if !enableGRPC {
+				log.Printf("⚠️  gRPC 未启用，无法通过 GetTUICConfig 提供 TUIC 配置")
+			}
+			if srv == nil {
+				log.Printf("⚠️  gRPC 服务器实例未创建，无法设置 TUIC 配置")
+			}
+		}
+	}
 
 	// 等待中断信号
 	quit := make(chan os.Signal, 1)
@@ -335,8 +533,17 @@ func main() {
 			}
 		}
 
+		// 停止 TUIC 服务器
+		if tuicServer != nil {
+			log.Println("正在停止 TUIC 服务器...")
+			tuicServer.Stop()
+			log.Println("TUIC 服务器已停止")
+		}
+
 		// 关闭服务器（会自动关闭 IP 池）
-		srv.Stop()
+		if enableGRPC {
+			srv.Stop()
+		}
 	}()
 
 	// 等待关闭完成或超时

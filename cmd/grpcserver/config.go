@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -26,6 +27,35 @@ type LoggerConfig struct {
 type TLSConfig struct {
 	Enable   bool   `toml:"enable"`
 	CertsDir string `toml:"certs_dir"`
+}
+
+// ProtocolType 协议类型枚举
+type ProtocolType string
+
+const (
+	ProtocolTypeGRPC ProtocolType = "grpc" // gRPC 协议
+	ProtocolTypeTUIC ProtocolType = "tuic" // TUIC 协议
+	ProtocolTypeBoth ProtocolType = "both" // 两种协议都启用
+)
+
+// ProtocolConfig 协议选择配置
+// 对应配置文件中的 [protocol] 表。
+type ProtocolConfig struct {
+	Type ProtocolType `toml:"type"` // 协议类型: "grpc", "tuic", "both"
+}
+
+// TUICConfig TUIC 服务器配置
+// 对应配置文件中的 [tuic] 表。
+type TUICConfig struct {
+	Enable      bool   `toml:"enable"`        // 是否启用 TUIC 协议
+	Address     string `toml:"address"`       // 监听地址
+	Port        string `toml:"port"`          // 监听端口
+	Token       string `toml:"token"`         // TUIC 认证令牌
+	UUID        string `toml:"uuid"`          // TUIC UUID（必需，用于 sing-box TUIC 服务器）
+	Password    string `toml:"password"`      // TUIC 密码（可选）
+	Congestion  string `toml:"congestion"`    // 拥塞控制算法（bbr/cubic/reno）
+	TLSCertPath string `toml:"tls_cert_path"` // TLS 证书路径（用于 sing-box）
+	TLSKeyPath  string `toml:"tls_key_path"`  // TLS 密钥路径（用于 sing-box）
 }
 
 // ServerConfig gRPC 服务器配置
@@ -97,7 +127,9 @@ type GoogleEarthDesktopDataConfig struct {
 type Config struct {
 	Logger                 LoggerConfig                 `toml:"logger"`
 	TLS                    TLSConfig                    `toml:"tls"`
+	Protocol               ProtocolConfig               `toml:"protocol"` // 协议选择配置
 	Server                 ServerConfig                 `toml:"server"`
+	TUIC                   TUICConfig                   `toml:"tuic"` // TUIC 配置
 	LocalIPPool            LocalIPPoolConfig            `toml:"LocalIPPool"`
 	DomainMonitor          DomainMonitorConfig          `toml:"DomainMonitor"`
 	DNSDomain              DNSDomainConfig              `toml:"DNSDomain"`
@@ -157,9 +189,23 @@ func defaultConfig() *Config {
 			Enable:   false,
 			CertsDir: "./certs",
 		},
+		Protocol: ProtocolConfig{
+			Type: ProtocolTypeGRPC, // 默认使用 gRPC
+		},
 		Server: ServerConfig{
 			Address: "0.0.0.0",
 			Port:    "50051",
+		},
+		TUIC: TUICConfig{
+			Enable:      false,
+			Address:     "0.0.0.0",
+			Port:        "8443",
+			Token:       "",
+			UUID:        "",
+			Password:    "",
+			Congestion:  "bbr",
+			TLSCertPath: "",
+			TLSKeyPath:  "",
 		},
 		LocalIPPool: LocalIPPoolConfig{
 			Enable:        false,
@@ -326,4 +372,93 @@ func tomlDecodeFile(path string, cfg *Config) (interface{}, error) {
 	}
 	// 直接使用全局函数
 	return toml.DecodeFile(path, cfg)
+}
+
+// SaveTUICConfig 保存 TUIC UUID 和密码到配置文件
+// 注意：只更新 uuid 和 password 字段，其他配置保持不变
+func SaveTUICConfig(path string, uuid, password string) error {
+	if path == "" {
+		return fmt.Errorf("配置文件路径不能为空")
+	}
+
+	// 读取现有配置文件内容
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("读取配置文件失败: %w", err)
+	}
+
+	// 将内容转换为字符串
+	contentStr := string(content)
+	lines := strings.Split(contentStr, "\n")
+	var uuidUpdated, passwordUpdated bool
+	var inTUICSection bool
+
+	// 遍历所有行，更新 uuid 和 password
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// 检测是否进入 [tuic] 部分
+		if trimmed == "[tuic]" {
+			inTUICSection = true
+			continue
+		}
+
+		// 检测是否离开 [tuic] 部分（遇到下一个 [section]）
+		if inTUICSection && strings.HasPrefix(trimmed, "[") && trimmed != "[tuic]" {
+			inTUICSection = false
+		}
+
+		// 在 [tuic] 部分更新 uuid 和 password
+		if inTUICSection {
+			// 更新 uuid（匹配 "uuid = " 或 "uuid=" 开头的行）
+			if strings.HasPrefix(trimmed, "uuid") && strings.Contains(trimmed, "=") {
+				lines[i] = fmt.Sprintf("uuid = \"%s\"", uuid)
+				uuidUpdated = true
+			}
+			// 更新 password（匹配 "password = " 或 "password=" 开头的行）
+			if strings.HasPrefix(trimmed, "password") && strings.Contains(trimmed, "=") {
+				lines[i] = fmt.Sprintf("password = \"%s\"", password)
+				passwordUpdated = true
+			}
+		}
+	}
+
+	// 如果 uuid 或 password 没有找到对应的行，需要在 [tuic] 部分添加
+	if inTUICSection && (!uuidUpdated || !passwordUpdated) {
+		// 找到 [tuic] 部分的结束位置（下一个 [section] 或文件末尾）
+		tuicEndIndex := len(lines)
+		for i := 0; i < len(lines); i++ {
+			trimmed := strings.TrimSpace(lines[i])
+			if trimmed == "[tuic]" {
+				// 找到 [tuic] 部分，查找结束位置
+				for j := i + 1; j < len(lines); j++ {
+					trimmedNext := strings.TrimSpace(lines[j])
+					if strings.HasPrefix(trimmedNext, "[") && trimmedNext != "[tuic]" {
+						tuicEndIndex = j
+						break
+					}
+				}
+				// 在 [tuic] 部分末尾添加缺失的字段
+				newLines := make([]string, 0, len(lines)+2)
+				newLines = append(newLines, lines[:tuicEndIndex]...)
+				if !uuidUpdated {
+					newLines = append(newLines, fmt.Sprintf("uuid = \"%s\"", uuid))
+				}
+				if !passwordUpdated {
+					newLines = append(newLines, fmt.Sprintf("password = \"%s\"", password))
+				}
+				newLines = append(newLines, lines[tuicEndIndex:]...)
+				lines = newLines
+				break
+			}
+		}
+	}
+
+	// 写入更新后的内容
+	newContent := strings.Join(lines, "\n")
+	if err := os.WriteFile(path, []byte(newContent), 0644); err != nil {
+		return fmt.Errorf("写入配置文件失败: %w", err)
+	}
+
+	return nil
 }
