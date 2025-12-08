@@ -567,6 +567,12 @@ func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *ta
 			shouldRetry := false
 			var waitTime time.Duration
 
+			// 连接正在使用中：立即返回错误，不重试，减少阻塞
+			if strings.Contains(errStr, "connection is in use") || strings.Contains(errStr, "所有连接当前都在使用中") {
+				// 立即返回错误，不重试
+				return nil, 0, fmt.Errorf("获取连接失败: %w", err)
+			}
+
 			if strings.Contains(errStr, "PoolManager正在预热中") {
 				// 预热中：等待后重试
 				shouldRetry = true

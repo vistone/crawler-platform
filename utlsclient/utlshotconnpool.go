@@ -34,10 +34,11 @@ type UTLSConnection struct {
 	h2ClientConn *http2.ClientConn
 	h2Mu         sync.Mutex
 
-	created  time.Time
-	lastUsed time.Time // 最后使用时间，用于空闲超时检查
-	healthy  bool
-	inUse    bool
+	created    time.Time
+	lastUsed   time.Time // 最后使用时间，用于空闲超时检查
+	healthy    bool
+	inUse      bool
+	recovering bool // 快速健康检查正在进行中，防止重复触发
 
 	requestCount int64
 	errorCount   int64
@@ -294,9 +295,16 @@ func (c *UTLSConnection) roundTripH2(req *http.Request) (*http.Response, error) 
 				strings.Contains(errStr, "EOF") {
 				// 底层连接已关闭，触发快速健康检查恢复连接（不标记为不健康）
 				// 连接保持健康状态，只有403才标记为不健康
-				projlogger.Debug("检测到底层连接已关闭，触发快速恢复连接 %s（连接保持健康状态）", c.targetIP)
-				// 触发快速健康检查（异步，不阻塞当前请求）
-				if c.onQuickHealthCheck != nil {
+				// 检查是否已经在恢复中，避免重复触发导致死循环
+				c.mu.Lock()
+				shouldTrigger := !c.recovering && c.onQuickHealthCheck != nil
+				if shouldTrigger {
+					c.recovering = true
+				}
+				c.mu.Unlock()
+				if shouldTrigger {
+					projlogger.Debug("检测到底层连接已关闭，触发快速恢复连接 %s（连接保持健康状态）", c.targetIP)
+					// 触发快速健康检查（异步，不阻塞当前请求）
 					go c.onQuickHealthCheck(c)
 				}
 			}
@@ -326,9 +334,16 @@ func (c *UTLSConnection) roundTripH2(req *http.Request) (*http.Response, error) 
 			strings.Contains(errStr, "EOF") {
 			// 底层连接已关闭，触发快速健康检查恢复连接（不标记为不健康）
 			// 连接保持健康状态，只有403才标记为不健康
-			projlogger.Debug("HTTP/2 请求失败，检测到底层连接已关闭，触发快速恢复连接 %s（连接保持健康状态）", c.targetIP)
-			// 触发快速健康检查（异步，不阻塞当前请求）
-			if c.onQuickHealthCheck != nil {
+			// 检查是否已经在恢复中，避免重复触发导致死循环
+			c.mu.Lock()
+			shouldTrigger := !c.recovering && c.onQuickHealthCheck != nil
+			if shouldTrigger {
+				c.recovering = true
+			}
+			c.mu.Unlock()
+			if shouldTrigger {
+				projlogger.Debug("HTTP/2 请求失败，检测到底层连接已关闭，触发快速恢复连接 %s（连接保持健康状态）", c.targetIP)
+				// 触发快速健康检查（异步，不阻塞当前请求）
 				go c.onQuickHealthCheck(c)
 			}
 		}

@@ -957,18 +957,41 @@ func submitRealTaskMultipleTimesWithNodePool(ctx context.Context, nodePool *Node
 	totalStartTime := time.Now()
 
 	// 高并发发送请求
-	// 优化：根据任务数量动态调整默认并发数，充分利用多节点资源
+	// 优化：根据任务数量和节点数量动态调整默认并发数，充分利用多节点资源
 	if concurrency <= 0 {
-		// 默认并发数：根据任务数量动态调整
-		// 小任务（<1000）：100并发
-		// 中等任务（1000-10000）：500并发
-		// 大任务（>10000）：1000并发
+		// 获取可用节点数量
+		healthyNodeCount := nodePool.GetHealthyNodeCount()
+		if healthyNodeCount == 0 {
+			healthyNodeCount = 1 // 防止除零
+		}
+
+		// 默认并发数：根据任务数量和节点数量动态调整
+		// 基础并发数：根据任务数量
+		var baseConcurrency int
 		if repeatCount < 1000 {
-			concurrency = 100
+			// 小任务：每个节点至少100并发，充分利用多节点
+			baseConcurrency = 200 // 提高小任务的并发数
 		} else if repeatCount < 10000 {
-			concurrency = 500
+			baseConcurrency = 500
 		} else {
-			concurrency = 1000
+			baseConcurrency = 1000
+		}
+
+		// 根据节点数量调整：多节点时可以支持更高的并发
+		// 每个节点可以处理更多并发请求（TUIC/QUIC支持多路复用）
+		// 节点数越多，总并发数可以更高
+		concurrency = baseConcurrency * healthyNodeCount
+
+		// 设置上限：避免创建过多goroutine
+		// 对于小任务，允许更高的并发上限（充分利用多节点）
+		var maxConcurrency int
+		if repeatCount < 1000 {
+			maxConcurrency = 500 * healthyNodeCount // 小任务允许更高并发
+		} else {
+			maxConcurrency = 2000 * healthyNodeCount
+		}
+		if concurrency > maxConcurrency {
+			concurrency = maxConcurrency
 		}
 	}
 	if repeatCount < concurrency {

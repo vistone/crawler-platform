@@ -379,6 +379,7 @@ func (c *Client) quickHealthCheck(conn *UTLSConnection) {
 		defer func() {
 			conn.mu.Lock()
 			conn.inUse = false
+			conn.recovering = false // 清除恢复标志，允许后续再次触发恢复
 			conn.mu.Unlock()
 		}()
 
@@ -397,10 +398,12 @@ func (c *Client) quickHealthCheck(conn *UTLSConnection) {
 
 		resp, err := conn.RoundTrip(req)
 		if err != nil {
-			// 网络错误：不标记为不健康，只记录日志
-			// 连接断开是正常的（可能是服务器空闲超时），下次使用时会自动恢复
-			// 只有403才标记为不健康
-			projlogger.Debug("快速健康检查失败(网络错误)，连接 %s 暂时不可用，错误详情: %v（连接保持健康状态，下次使用时会自动恢复）", targetIP, err)
+			// 网络错误：连接已关闭，标记为不健康，避免重复触发快速恢复导致死循环
+			// 连接断开后需要重新创建连接，而不是重复尝试恢复已关闭的连接
+			conn.mu.Lock()
+			conn.healthy = false // 标记为不健康，避免重复触发快速恢复
+			conn.mu.Unlock()
+			projlogger.Debug("快速健康检查失败(网络错误)，连接 %s 已关闭，标记为不健康: %v", targetIP, err)
 			return
 		}
 		defer resp.Body.Close()
