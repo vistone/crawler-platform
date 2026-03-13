@@ -19,6 +19,10 @@ import (
 	projlogger "crawler-platform/logger"
 )
 
+// DefaultHealthCheckPath 是默认的健康检查路径
+// 用于在配置未指定健康检查路径时的回退值
+const DefaultHealthCheckPath = "/rt/earth/PlanetoidMetadata"
+
 // UTLSConnection uTLS连接包装器
 type UTLSConnection struct {
 	conn       net.Conn
@@ -311,9 +315,9 @@ func (c *UTLSConnection) roundTripH2(req *http.Request) (*http.Response, error) 
 			return nil, fmt.Errorf("创建 HTTP/2 连接失败: %w", err)
 		}
 		c.h2ClientConn = clientConn
+		projlogger.Debug("HTTP/2 连接已创建: %s", c.targetIP)
 	}
 	h2Conn := c.h2ClientConn
-	//projlogger.Info("请求的远程ip是: %v", c.targetIP)
 	c.h2Mu.Unlock()
 
 	resp, err := h2Conn.RoundTrip(req)
@@ -410,31 +414,47 @@ func establishConnection(ip, domain string, config *PoolConfig, on403 func(strin
 
 	// 记录使用的本地 IP 地址（用于日志）
 	var localIPStr string
+	var localIP net.IP
 
 	// 如果配置了本地 IP 池，从池中获取一个本地 IP 并绑定
+	// 这是反检测的关键：使用动态 IPv6 地址池，防止固定 IP 外泄
 	if config.LocalIPPool != nil {
 		targetIsIPv6 := strings.Contains(ip, ":")
-		var localIP net.IP
 
-		// 如果目标是 IPv6，获取 IPv6 本地地址（支持引用计数复用，不需要重试）
+		// 优先使用 IPv6 地址池（如果可用）
+		// 这样可以防止固定 IPv4 地址外泄，提高匿名性
 		if targetIsIPv6 {
+			// 目标是 IPv6，从地址池获取 IPv6 地址
 			candidateIP := config.LocalIPPool.GetIP()
 			if candidateIP != nil && candidateIP.To4() == nil {
 				// 获取到 IPv6 地址，直接使用
 				localIP = candidateIP
+				projlogger.Debug("使用 IPv6 地址池地址: %s", localIP.String())
 			} else if candidateIP != nil {
 				// 如果返回的是 IPv4，但目标是 IPv6，标记为未使用
 				config.LocalIPPool.MarkIPUnused(candidateIP)
-				// 不再重试，避免被认为是攻击行为
+				projlogger.Debug("地址池返回 IPv4，但目标为 IPv6，跳过使用")
 			}
-			// 如果 candidateIP == nil，使用系统默认地址（不重试）
+			// 如果 candidateIP == nil，说明IP池处于隧道模式或无法提供IPv6地址
+			// 此时直接返回错误，跳过IPv6目标，避免无效的网络不可达错误
+			if localIP == nil {
+				return nil, fmt.Errorf("跳过IPv6目标：本地IP池无法提供IPv6地址，目标 %s", ip)
+			}
 		} else {
-			// 如果目标是 IPv4，获取本地 IP（可能是 IPv4 或 nil）
-			// 注意：如果本地 IP 池只支持 IPv6，这里会返回 nil，使用系统默认
-			localIP = config.LocalIPPool.GetIP()
-			// 如果返回的是 IPv6，但目标是 IPv4，不能使用，返回 nil
-			if localIP != nil && localIP.To4() == nil {
-				localIP = nil // IPv6 地址不能用于 IPv4 目标
+			// 目标是 IPv4，优先尝试获取 IPv6 地址进行 NAT64 转换（如果支持）
+			// 或者获取 IPv4 地址
+			candidateIP := config.LocalIPPool.GetIP()
+			if candidateIP != nil {
+				if candidateIP.To4() == nil {
+					// 获取到 IPv6 地址，但目标是 IPv4
+					// 标记为未使用，因为无法直接用于 IPv4 连接
+					config.LocalIPPool.MarkIPUnused(candidateIP)
+					projlogger.Debug("地址池返回 IPv6，但目标为 IPv4，跳过使用")
+				} else {
+					// 获取到 IPv4 地址
+					localIP = candidateIP
+					projlogger.Debug("使用 IPv4 地址池地址: %s", localIP.String())
+				}
 			}
 		}
 
@@ -452,17 +472,84 @@ func establishConnection(ip, domain string, config *PoolConfig, on403 func(strin
 		}
 	}
 
+	// 安全检查：如果没有获取到本地 IP 地址，且配置了 IP 池
+	// 记录警告日志，提醒可能存在固定 IP 外泄风险
+	if localIPStr == "" && config.LocalIPPool != nil {
+		projlogger.Warn("未能从 IP 池获取地址，可能使用系统默认地址，存在固定 IP 外泄风险")
+	}
+
 	//projlogger.Debug("尝试TCP连接: %s", address)
 	tcpConn, err := dialer.Dial("tcp", address)
 	if err != nil {
-		projlogger.Debug("TCP连接失败: %s, 错误: %v", address, err)
-		return nil, fmt.Errorf("TCP连接失败: %w", err)
+		// 如果连接失败且使用了本地IPv6地址，可能是地址不可用导致的
+		// 记录更详细的错误信息以便调试
+		if localIPStr != "" {
+			// 检查是否是地址绑定相关的错误
+			errStr := err.Error()
+			if strings.Contains(errStr, "cannot assign requested address") ||
+				strings.Contains(errStr, "address not available") {
+				// 明确的地址不可用错误，地址可能已被清理
+				projlogger.Debug("TCP连接失败（本地IPv6地址 %s 不可用，可能已被清理）: %s, 错误: %v", localIPStr, address, err)
+				// 如果配置了本地IP池，标记该地址为未使用，让系统重新创建
+				if config.LocalIPPool != nil {
+					localIP := net.ParseIP(localIPStr)
+					if localIP != nil {
+						config.LocalIPPool.MarkIPUnused(localIP)
+					}
+				}
+			} else if strings.Contains(errStr, "bind: invalid argument") {
+				// 链路本地地址(fe80::/10)或其他无效地址导致的绑定错误
+				// 这种地址不能用于外部连接，标记为未使用并记录警告
+				projlogger.Warn("TCP连接失败（本地IPv6地址 %s 无效，可能是链路本地地址或其他不可路由地址）: %s, 错误: %v", localIPStr, address, err)
+				if config.LocalIPPool != nil {
+					localIP := net.ParseIP(localIPStr)
+					if localIP != nil {
+						config.LocalIPPool.MarkIPUnused(localIP)
+					}
+				}
+				// 尝试不绑定本地IP重新连接（传统模式回退）
+				projlogger.Info("尝试使用传统模式（不绑定本地IP）重新连接: %s", address)
+				dialer.LocalAddr = nil
+				tcpConn, err = dialer.Dial("tcp", address)
+				if err == nil {
+					projlogger.Info("传统模式连接成功: %s", address)
+					localIPStr = "" // 清除本地IP标记，表示使用系统默认地址
+				} else {
+					projlogger.Debug("传统模式连接也失败: %s, 错误: %v", address, err)
+				}
+			} else if strings.Contains(errStr, "network is unreachable") {
+				// IPv6网络不可达，可能是系统没有IPv6路由
+				// 尝试不绑定本地IP重新连接，让系统自动选择合适的网络
+				projlogger.Warn("TCP连接失败（IPv6网络不可达）: %s, 错误: %v", address, err)
+				projlogger.Info("尝试使用传统模式（不绑定本地IP）重新连接: %s", address)
+				dialer.LocalAddr = nil
+				tcpConn, err = dialer.Dial("tcp", address)
+				if err == nil {
+					projlogger.Info("传统模式连接成功: %s", address)
+					localIPStr = "" // 清除本地IP标记，表示使用系统默认地址
+				} else {
+					projlogger.Debug("传统模式连接也失败: %s, 错误: %v", address, err)
+				}
+			} else if strings.Contains(errStr, "too many open files") {
+				// "too many open files" 可能是地址不可用导致的累积失败
+				projlogger.Debug("TCP连接失败（使用本地IPv6地址 %s）: %s, 错误: %v (可能是地址不可用或文件描述符耗尽)", localIPStr, address, err)
+			} else {
+				projlogger.Debug("TCP连接失败（使用本地IPv6地址 %s）: %s, 错误: %v", localIPStr, address, err)
+			}
+		} else {
+			projlogger.Debug("TCP连接失败: %s, 错误: %v", address, err)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("TCP连接失败: %w", err)
+		}
 	}
 	//projlogger.Debug("TCP连接成功: %s", address)
 
 	// 设置TCP keep-alive以保持长连接
 	// 这样可以防止连接在空闲时被服务器或中间设备（如NAT、防火墙）关闭
+	var tcpConnPtr *net.TCPConn
 	if tcpConn, ok := tcpConn.(*net.TCPConn); ok {
+		tcpConnPtr = tcpConn
 		tcpConn.SetKeepAlive(true)
 		tcpConn.SetKeepAlivePeriod(30 * time.Second) // 每30秒发送一次keep-alive探测包
 		// 注意：SetKeepAlivePeriod 在某些系统上可能不支持，如果失败也不影响连接建立
@@ -476,7 +563,35 @@ func establishConnection(ip, domain string, config *PoolConfig, on403 func(strin
 		}
 	}()
 
+	// 获取浏览器指纹（包含 TLS 指纹和 User-Agent）
 	fingerprint := fpLibrary.RandomProfile()
+
+	// 应用 TCP 指纹伪装 - 确保与浏览器指纹来自同一平台
+	// 这是反检测的关键：TLS 指纹、User-Agent、TCP 指纹必须同步
+	if tcpConnPtr != nil {
+		err := ApplyTCPFingerprintByProfile(tcpConnPtr, fingerprint)
+		if err != nil {
+			projlogger.Debug("应用 TCP 指纹失败 (平台: %s): %v", fingerprint.Platform, err)
+			// TCP 指纹设置失败不阻止连接建立，继续尝试
+		}
+	}
+
+	// 验证指纹一致性
+	if consistent, msg := GetFingerprintConsistency(fingerprint); consistent {
+		projlogger.Debug("指纹一致性检查通过: %s", msg)
+	} else {
+		projlogger.Warn("指纹一致性检查警告: %s", msg)
+	}
+
+	// 验证 IP 池使用情况，防止固定 IP 外泄
+	if valid, msg := ValidateIPPoolUsage(localIPStr, config.LocalIPPool != nil); valid {
+		projlogger.Debug("IP 池验证: %s", msg)
+	} else {
+		projlogger.Warn("IP 池验证: %s", msg)
+	}
+
+	// 记录完整的反检测配置信息
+	LogFingerprintAndIP(fingerprint, localIPStr, ip)
 
 	uconn := utls.UClient(tcpConn, &utls.Config{
 		ServerName:         domain,
@@ -513,7 +628,7 @@ func establishConnection(ip, domain string, config *PoolConfig, on403 func(strin
 	// TLS握手成功后进行健康检查（使用 HealthCheckPath，GET 方法）
 	healthCheckPath := config.HealthCheckPath
 	if healthCheckPath == "" {
-		healthCheckPath = "/rt/earth/PlanetoidMetadata" // 默认健康检查路径
+		healthCheckPath = DefaultHealthCheckPath // 使用默认健康检查路径
 	}
 
 	healthCheckURL := "https://" + domain + healthCheckPath

@@ -1,6 +1,8 @@
 package localippool
 
 import ( // 导入所需的标准库
+
+	"crawler-platform/logger"
 	"crypto/rand"     // 用于加密安全的随机数生成
 	"fmt"             // 用于格式化输入输出
 	"io"              // 用于基础IO接口
@@ -28,6 +30,10 @@ type IPPool interface { // 定义IPPool接口
 	SetTargetIPCount(count int) // 设置目标IP数量方法
 	// SupportsDynamicPool 检查池是否支持动态地址生成。
 	SupportsDynamicPool() bool
+	// GetActiveIPv6Addresses 获取当前活跃的IPv6地址列表（仅对支持动态IPv6的池有效）
+	GetActiveIPv6Addresses() []string
+	// GetIPv4Addresses 获取IPv4地址列表
+	GetIPv4Addresses() []string
 	// Closer io.Closer 接口的实现，允许使用 defer pool.Close() 的方式优雅关闭。
 	io.Closer // 嵌入Closer接口，用于资源清理
 }
@@ -123,6 +129,7 @@ func NewLocalIPPool(staticIPv4s []string, ipv6SubnetCIDR string) (IPPool, error)
 		if len(detectedSubnets) > 0 {
 			// 优先使用第一个检测到的/64子网
 			ipv6SubnetCIDR = detectedSubnets[0]
+			logger.Info("[IP池] 自动检测到IPv6子网: detectedSubnets=%v, selectedSubnet=%s", detectedSubnets, ipv6SubnetCIDR)
 		} else {
 			// 即使没有检测到公网IPv6子网，如果系统支持IPv6路由（如通过隧道），
 			// 仍然可以创建IPv6池，但不绑定本地IP，让系统自动选择路由
@@ -145,7 +152,9 @@ func NewLocalIPPool(staticIPv4s []string, ipv6SubnetCIDR string) (IPPool, error)
 		isVirtualSubnet := subnet.IP.To4() == nil && len(subnet.IP) >= 2 && subnet.IP[0] == 0x20 && subnet.IP[1] == 0x00
 
 		// 核心逻辑：检查当前系统网络配置是否真的支持此IPv6子网。
-		if isSubnetConfigured(subnet) || isVirtualSubnet { // 检查子网是否已配置，或者是虚拟子网（隧道模式）
+		isConfigured := isSubnetConfigured(subnet)
+		logger.Info("[IP池] 检查IPv6子网配置状态: subnet=%s, isConfigured=%v, isVirtualSubnet=%v", subnet.String(), isConfigured, isVirtualSubnet)
+		if isConfigured || isVirtualSubnet { // 检查子网是否已配置，或者是虚拟子网（隧道模式）
 			if isVirtualSubnet {
 				// 对于隧道模式，不绑定本地IP，让系统自动选择路由
 				// 创建一个特殊的IPv6池，GetIP返回nil表示不绑定本地IP
@@ -171,6 +180,9 @@ func NewLocalIPPool(staticIPv4s []string, ipv6SubnetCIDR string) (IPPool, error)
 				pool.ipv6Interface = detectIPv6Interface(subnet)
 				if pool.ipv6Interface == "" {
 					pool.ipv6Interface = "ipv6net" // 默认接口名称
+					logger.Warn("[IP池] 未能检测到IPv6接口名称，使用默认接口: %s", pool.ipv6Interface)
+				} else {
+					logger.Info("[IP池] 检测到IPv6接口: %s", pool.ipv6Interface)
 				}
 
 				finalIPv6Mode = "已启用 (动态生成模式)"
@@ -187,25 +199,26 @@ func NewLocalIPPool(staticIPv4s []string, ipv6SubnetCIDR string) (IPPool, error)
 	}
 
 	// --- 打印初始化摘要 ---
-	fmt.Println("--- [IP 池初始化状态] ---")
+
+	logger.Info("--- [IP 池初始化状态] ---")
 	// 打印IPv4状态
 	if len(pool.staticIPv4s) > 0 {
 		var ipv4Strings []string
 		for _, ip := range pool.staticIPv4s {
 			ipv4Strings = append(ipv4Strings, ip.String())
 		}
-		fmt.Printf("  [IPv4] 可用地址: %v\n", ipv4Strings)
+		logger.Info("  [IPv4] 可用地址: %v", ipv4Strings)
 	} else {
-		fmt.Println("  [IPv4] 可用地址: 未检测到或未提供")
+		logger.Info("  [IPv4] 可用地址: 未检测到或未提供")
 	}
 	// 打印IPv6状态
-	fmt.Printf("  [IPv6] 支持状态: %s\n", finalIPv6Mode)
-	fmt.Printf("  [IPv6] 使用子网: %s\n", finalIPv6Subnet)
+	logger.Info("  [IPv6] 支持状态: %s", finalIPv6Mode)
+	logger.Info("  [IPv6] 使用子网: %s", finalIPv6Subnet)
 	if finalIPv6Interface != "N/A" {
-		fmt.Printf("  [IPv6] 绑定接口: %s\n", finalIPv6Interface)
+		logger.Info("  [IPv6] 绑定接口: %s", finalIPv6Interface)
 	}
-	fmt.Printf("  [IPv6] 说明: %s\n", finalIPv6Note)
-	fmt.Println("--------------------------")
+	logger.Info("  [IPv6] 说明: %s", finalIPv6Note)
+	logger.Info("--------------------------")
 
 	// 如果最终没有任何可用的IP地址，则初始化失败。
 	if !pool.hasIPv6Support && len(pool.staticIPv4s) == 0 { // 如果既不支持IPv6又没有IPv4地址
@@ -355,7 +368,7 @@ func (p *LocalIPPool) GetIP() net.IP { // 实现GetIP方法
 			if currentMinActive == 0 {
 				// minActiveAddrs 未设置，说明 SetTargetIPCount 还没有被调用
 				// 这种情况下不应该创建地址，应该等待 SetTargetIPCount 被调用
-				fmt.Printf("[IP池] 警告: minActiveAddrs未设置，等待SetTargetIPCount被调用，跳过创建地址\n")
+				logger.Warn("[IP池] 警告: minActiveAddrs未设置，等待SetTargetIPCount被调用，跳过创建地址")
 				select {
 				case p.ipv6Queue <- ip:
 				default:
@@ -370,15 +383,43 @@ func (p *LocalIPPool) GetIP() net.IP { // 实现GetIP方法
 			p.ensureIPv6AddressCreated(ip)
 
 			// 检查地址是否成功创建并添加到活跃地址列表
+			// ensureIPv6AddressCreated 已经验证了地址存在，这里只需要检查是否在活跃列表中
 			p.activeIPv6Mutex.RLock()
 			isActive := p.activeIPv6Addrs[ipStr]
 			p.activeIPv6Mutex.RUnlock()
 
 			if !isActive {
 				// 地址创建失败或未添加到活跃列表，不应该使用
-				fmt.Printf("[IP池] 警告: IPv6地址 %s 创建后未添加到活跃列表，跳过使用\n", ipStr)
+				logger.Warn("[IP池] 警告: IPv6地址 %s 创建后未添加到活跃列表，跳过使用", ipStr)
 				// 递归调用，尝试获取其他地址
 				return p.GetIP()
+			}
+
+			// ensureIPv6AddressCreated 已经验证了地址在系统上存在
+			// 这里只需要做最后的双重检查，防止地址在创建后被清理线程删除
+			p.mu.RLock()
+			interfaceName := p.ipv6Interface
+			p.mu.RUnlock()
+
+			if interfaceName == "" {
+				interfaceName = "ipv6net"
+			}
+
+			link, err := netlink.LinkByName(interfaceName)
+			if err != nil {
+				// 无法获取接口，跳过验证（可能是临时问题）
+				logger.Debug("[IP池] 无法获取接口 %s 进行地址验证: %v", interfaceName, err)
+			} else {
+				// 最终验证地址是否真的存在（传递 link 以避免重复打开文件描述符）
+				if !p.isIPv6AddressExists(ipStr, link) {
+					// 地址不存在，从活跃列表中移除
+					p.activeIPv6Mutex.Lock()
+					delete(p.activeIPv6Addrs, ipStr)
+					p.activeIPv6Mutex.Unlock()
+					logger.Warn("[IP池] 警告: IPv6地址 %s 在系统上不存在，可能已被清理，跳过使用", ipStr)
+					// 递归调用，尝试获取其他地址
+					return p.GetIP()
+				}
 			}
 
 			// 标记地址为正在使用（增加引用计数）
@@ -563,13 +604,15 @@ func isPrivateIPv6(ip net.IP) bool {
 	return false
 }
 
-// detectAvailableIPv4Addresses 自动检测系统中可用的公网IPv4地址
-// 返回所有非回环、已启用接口的公网IPv4地址列表（排除私有地址）
+// detectAvailableIPv4Addresses 自动检测系统中可用的IPv4地址
+// 优先返回公网IPv4地址，如果没有公网地址则返回私有地址
 func detectAvailableIPv4Addresses() []string {
-	var ipv4List []string
+	var publicIPv4List []string  // 公网地址列表
+	var privateIPv4List []string // 私有地址列表
+
 	interfaces, err := net.Interfaces()
 	if err != nil {
-		return ipv4List
+		return publicIPv4List
 	}
 
 	for _, iface := range interfaces {
@@ -587,26 +630,38 @@ func detectAvailableIPv4Addresses() []string {
 			if ipnet, ok := addr.(*net.IPNet); ok {
 				// 只处理IPv4地址
 				if ipv4 := ipnet.IP.To4(); ipv4 != nil {
-					// 排除私有地址（内网地址）
-					if !isPrivateIPv4(ipv4) {
-						ipv4List = append(ipv4List, ipv4.String())
+					if isPrivateIPv4(ipv4) {
+						// 收集私有地址
+						privateIPv4List = append(privateIPv4List, ipv4.String())
+					} else {
+						// 收集公网地址
+						publicIPv4List = append(publicIPv4List, ipv4.String())
 					}
 				}
 			}
 		}
 	}
-	return ipv4List
+
+	// 优先返回公网地址，如果没有公网地址则返回私有地址
+	if len(publicIPv4List) > 0 {
+		return publicIPv4List
+	}
+	return privateIPv4List
 }
 
-// detectAvailableIPv6Subnets 自动检测系统中可用的公网IPv6子网
-// 返回所有非回环、已启用接口的公网IPv6子网CIDR列表（优先返回/64子网，排除私有地址）
+// detectAvailableIPv6Subnets 自动检测系统中可用的IPv6子网
+// 优先返回公网IPv6子网，如果没有公网子网则返回私有子网
+// 返回所有非回环、已启用接口的IPv6子网CIDR列表（优先返回/64子网）
+// 注意：过滤掉链路本地地址子网(fe80::/10)，因为它们不能用于外部连接
 func detectAvailableIPv6Subnets() []string {
-	var subnets []string
-	seenSubnets := make(map[string]bool) // 用于去重
+	var publicSubnets []string                  // 公网子网列表
+	var privateSubnets []string                 // 私有子网列表
+	seenPublicSubnets := make(map[string]bool)  // 用于去重公网子网
+	seenPrivateSubnets := make(map[string]bool) // 用于去重私有子网
 
 	interfaces, err := net.Interfaces()
 	if err != nil {
-		return subnets
+		return publicSubnets
 	}
 
 	for _, iface := range interfaces {
@@ -624,23 +679,18 @@ func detectAvailableIPv6Subnets() []string {
 			if ipnet, ok := addr.(*net.IPNet); ok {
 				// 只处理IPv6地址
 				if ipnet.IP.To4() == nil {
-					// 排除私有地址（内网地址）
-					if isPrivateIPv6(ipnet.IP) {
+					// 跳过链路本地地址(fe80::/10)，它们不能用于外部连接
+					if len(ipnet.IP) >= 2 && ipnet.IP[0] == 0xfe && (ipnet.IP[1]&0xc0) == 0x80 {
 						continue
 					}
-
+					isPrivate := isPrivateIPv6(ipnet.IP)
 					ones, bits := ipnet.Mask.Size()
 
-					// 如果已经是/64子网，直接使用
-					if ones == 64 && bits == 128 {
-						subnetCIDR := fmt.Sprintf("%s/64", ipnet.IP.String())
-						if !seenSubnets[subnetCIDR] {
-							subnets = append(subnets, subnetCIDR)
-							seenSubnets[subnetCIDR] = true
-						}
-					} else if ones >= 64 {
-						// 如果子网掩码大于等于64位，提取前64位作为子网前缀
-						// 例如：2607:f8b0:4002:c09::5d/128 -> 2607:f8b0:4002:c09::/64
+					// 如果子网掩码大于等于64位，提取前64位作为子网前缀
+					// 例如：2607:f8b0:4002:c09::5d/128 -> 2607:f8b0:4002:c09::/64
+					// 或者：fd00:6868:6868::/64 -> fd00:6868:6868::/64
+					if ones >= 64 && bits == 128 {
+						// 提取前64位（前8字节）作为子网前缀，后64位清零
 						ip := make(net.IP, 16)
 						copy(ip, ipnet.IP)
 						// 将后64位（后8字节）清零，得到/64子网前缀
@@ -648,16 +698,28 @@ func detectAvailableIPv6Subnets() []string {
 							ip[i] = 0
 						}
 						subnetCIDR := fmt.Sprintf("%s/64", ip.String())
-						if !seenSubnets[subnetCIDR] {
-							subnets = append(subnets, subnetCIDR)
-							seenSubnets[subnetCIDR] = true
+						if isPrivate {
+							if !seenPrivateSubnets[subnetCIDR] {
+								privateSubnets = append(privateSubnets, subnetCIDR)
+								seenPrivateSubnets[subnetCIDR] = true
+							}
+						} else {
+							if !seenPublicSubnets[subnetCIDR] {
+								publicSubnets = append(publicSubnets, subnetCIDR)
+								seenPublicSubnets[subnetCIDR] = true
+							}
 						}
 					}
 				}
 			}
 		}
 	}
-	return subnets
+
+	// 优先返回公网子网，如果没有公网子网则返回私有子网
+	if len(publicSubnets) > 0 {
+		return publicSubnets
+	}
+	return privateSubnets
 }
 
 // hasIPv6RoutingSupport 检查系统是否支持IPv6路由（可能通过隧道）
@@ -705,7 +767,14 @@ func hasIPv6RoutingSupport() bool {
 
 // isSubnetConfigured 遍历当前系统的所有网络接口及其地址，
 // 检查是否有任何一个已配置的IP地址属于给定的目标子网。
+// 注意：链路本地地址子网(fe80::/10)不被视为有效配置，因为它们不能用于外部连接
 func isSubnetConfigured(targetSubnet *net.IPNet) bool { // 检查子网是否已配置的方法
+	// 首先检查目标子网是否是链路本地地址子网(fe80::/10)
+	// 链路本地地址不能用于外部连接，因此不应被视为有效配置
+	if len(targetSubnet.IP) >= 2 && targetSubnet.IP[0] == 0xfe && (targetSubnet.IP[1]&0xc0) == 0x80 {
+		return false
+	}
+
 	interfaces, err := net.Interfaces() // 获取网络接口列表
 	if err != nil {                     // 如果获取失败
 		return false // 返回false
@@ -725,6 +794,10 @@ func isSubnetConfigured(targetSubnet *net.IPNet) bool { // 检查子网是否已
 		for _, addr := range addrs { // 遍历地址列表
 			// 类型断言，只处理IP网络地址
 			if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() == nil { // 如果是IPv6网络地址
+				// 跳过链路本地地址，它们不能用于外部连接
+				if len(ipnet.IP) >= 2 && ipnet.IP[0] == 0xfe && (ipnet.IP[1]&0xc0) == 0x80 {
+					continue
+				}
 				// 检查接口上配置的IP地址是否位于我们目标的大子网内。
 				// 例如，检查 2607:..::2/128 是否在 2607:..::/64 内。
 				if targetSubnet.Contains(ipnet.IP) { // 如果包含目标IP
@@ -783,8 +856,23 @@ func (p *LocalIPPool) ensureIPv6AddressCreated(ip net.IP) {
 		return // 地址已创建，跳过
 	}
 
-	// 检查地址是否已在系统上存在
-	if p.isIPv6AddressExists(ipStr) {
+	// 获取接口信息（提前获取，以便在检查地址是否存在时复用）
+	p.mu.RLock()
+	interfaceName := p.ipv6Interface
+	p.mu.RUnlock()
+
+	if interfaceName == "" {
+		interfaceName = "ipv6net" // 默认接口名称
+	}
+
+	link, err := netlink.LinkByName(interfaceName)
+	if err != nil {
+		logger.Warn("[IP池] 警告: 获取接口 %s 失败: %v", interfaceName, err)
+		return
+	}
+
+	// 检查地址是否已在系统上存在（传递已获取的 link 以避免重复打开文件描述符）
+	if p.isIPv6AddressExists(ipStr, link) {
 		// 地址已存在，记录但不创建
 		p.createdIPv6Mutex.Lock()
 		p.createdIPv6Addrs[ipStr] = true
@@ -796,29 +884,37 @@ func (p *LocalIPPool) ensureIPv6AddressCreated(ip net.IP) {
 	}
 
 	// 创建IPv6地址
-	p.mu.RLock()
-	interfaceName := p.ipv6Interface
-	p.mu.RUnlock()
-
-	if interfaceName == "" {
-		interfaceName = "ipv6net" // 默认接口名称
-	}
-
-	link, err := netlink.LinkByName(interfaceName)
-	if err != nil {
-		fmt.Printf("[IP池] 警告: 获取接口 %s 失败: %v\n", interfaceName, err)
-		return
-	}
-
 	addr, err := netlink.ParseAddr(ipStr + "/128")
 	if err != nil {
-		fmt.Printf("[IP池] 警告: 解析IPv6地址 %s 失败: %v\n", ipStr, err)
+		logger.Warn("[IP池] 警告: 解析IPv6地址 %s 失败: %v", ipStr, err)
 		return
 	}
 
 	if err := netlink.AddrAdd(link, addr); err != nil {
 		// 创建失败，记录错误但不阻塞
-		fmt.Printf("[IP池] 警告: 创建IPv6地址 %s 失败: %v\n", ipStr, err)
+		logger.Warn("[IP池] 警告: 创建IPv6地址 %s 失败: %v", ipStr, err)
+		return
+	}
+
+	// 创建后立即验证地址是否真的在系统上存在
+	// 确保地址创建完成后再标记为已创建
+	maxRetries := 3
+	retryDelay := 50 * time.Millisecond
+	addressExists := false
+
+	for i := 0; i < maxRetries; i++ {
+		if p.isIPv6AddressExists(ipStr, link) {
+			addressExists = true
+			break
+		}
+		if i < maxRetries-1 {
+			time.Sleep(retryDelay)
+		}
+	}
+
+	if !addressExists {
+		// 地址创建后验证失败，可能创建操作还没完全生效
+		logger.Warn("[IP池] 警告: IPv6地址 %s 创建后验证失败，可能还未完全生效", ipStr)
 		return
 	}
 
@@ -836,24 +932,76 @@ func (p *LocalIPPool) ensureIPv6AddressCreated(ip net.IP) {
 
 	// 只有新创建的地址才打印日志
 	if isNewAddr {
-		fmt.Printf("[IP池] 已创建IPv6地址: %s/%s\n", ipStr, interfaceName)
+		logger.Info("[IP池] 已创建IPv6地址: %s/%s", ipStr, interfaceName)
 	}
 }
 
-// isIPv6AddressExists 检查IPv6地址是否已在系统上存在
-func (p *LocalIPPool) isIPv6AddressExists(ipStr string) bool {
-	p.mu.RLock()
-	interfaceName := p.ipv6Interface
-	p.mu.RUnlock()
+// deleteIPv6AddressFromSystem 从系统中删除IPv6地址并从内部映射中移除
+// 如果提供了 link 参数，则使用它；否则会获取一个新的 link
+// 返回是否成功删除
+func (p *LocalIPPool) deleteIPv6AddressFromSystem(ipStr string, link netlink.Link) bool {
+	var err error
+	if link == nil {
+		// 如果没有提供 link，则获取一个新的
+		p.mu.RLock()
+		interfaceName := p.ipv6Interface
+		p.mu.RUnlock()
 
-	if interfaceName == "" {
-		interfaceName = "ipv6net"
+		if interfaceName == "" {
+			interfaceName = "ipv6net"
+		}
+
+		link, err = netlink.LinkByName(interfaceName)
+		if err != nil {
+			logger.Warn("[IP池] 警告: 获取接口 %s 失败: %v", interfaceName, err)
+			return false
+		}
 	}
 
-	link, err := netlink.LinkByName(interfaceName)
+	addr, err := netlink.ParseAddr(ipStr + "/128")
 	if err != nil {
-		// 接口不存在，地址也就不存在
+		logger.Warn("[IP池] 警告: 解析IPv6地址 %s 失败: %v", ipStr, err)
 		return false
+	}
+
+	if err := netlink.AddrDel(link, addr); err != nil {
+		logger.Warn("[IP池] 警告: 删除IPv6地址 %s 失败: %v", ipStr, err)
+		return false
+	}
+
+	// 从已创建地址映射中移除
+	p.createdIPv6Mutex.Lock()
+	delete(p.createdIPv6Addrs, ipStr)
+	p.createdIPv6Mutex.Unlock()
+
+	// 从活跃地址映射中移除
+	p.activeIPv6Mutex.Lock()
+	delete(p.activeIPv6Addrs, ipStr)
+	p.activeIPv6Mutex.Unlock()
+
+	return true
+}
+
+// isIPv6AddressExists 检查IPv6地址是否已在系统上存在
+// 如果提供了 link 参数，则使用它；否则会获取一个新的 link（可能打开新的文件描述符）
+// 在批量操作中，应该传递已获取的 link 以避免文件描述符泄漏
+func (p *LocalIPPool) isIPv6AddressExists(ipStr string, link netlink.Link) bool {
+	var err error
+	if link == nil {
+		// 如果没有提供 link，则获取一个新的
+		p.mu.RLock()
+		interfaceName := p.ipv6Interface
+		p.mu.RUnlock()
+
+		if interfaceName == "" {
+			interfaceName = "ipv6net"
+		}
+
+		link, err = netlink.LinkByName(interfaceName)
+		if err != nil {
+			// 接口不存在，地址也就不存在
+			return false
+		}
 	}
 
 	addrs, err := netlink.AddrList(link, netlink.FAMILY_V6)
@@ -889,7 +1037,7 @@ func (p *LocalIPPool) cleanupCreatedIPv6Addresses() {
 
 	link, err := netlink.LinkByName(interfaceName)
 	if err != nil {
-		fmt.Printf("[IP池] 警告: 清理时获取接口 %s 失败: %v\n", interfaceName, err)
+		logger.Warn("[IP池] 警告: 清理时获取接口 %s 失败: %v", interfaceName, err)
 		return
 	}
 
@@ -905,24 +1053,24 @@ func (p *LocalIPPool) cleanupCreatedIPv6Addresses() {
 
 		addr, err := netlink.ParseAddr(ipStr + "/128")
 		if err != nil {
-			fmt.Printf("[IP池] 警告: 清理时解析IPv6地址 %s 失败: %v\n", ipStr, err)
+			logger.Warn("[IP池] 警告: 清理时解析IPv6地址 %s 失败: %v", ipStr, err)
 			continue
 		}
 
 		if err := netlink.AddrDel(link, addr); err != nil {
 			// 删除失败，记录但不阻塞
-			fmt.Printf("[IP池] 警告: 删除IPv6地址 %s 失败: %v\n", ipStr, err)
+			logger.Warn("[IP池] 警告: 删除IPv6地址 %s 失败: %v", ipStr, err)
 		} else {
 			cleaned++
 		}
 	}
 
 	if skipped > 0 {
-		fmt.Printf("[IP池] 清理时跳过了 %d 个系统保留地址（如 ::2）\n", skipped)
+		logger.Info("[IP池] 清理时跳过了 %d 个系统保留地址（如 ::2）", skipped)
 	}
 
 	if cleaned > 0 {
-		fmt.Printf("[IP池] 已清理 %d 个IPv6地址\n", cleaned)
+		logger.Info("[IP池] 已清理 %d 个IPv6地址", cleaned)
 	}
 
 	// 清空映射
@@ -960,7 +1108,7 @@ func (p *LocalIPPool) ReleaseIP(ip net.IP) {
 
 	// 检查是否是系统保留地址，如果是则跳过删除
 	if isReservedIPv6Address(ip) {
-		fmt.Printf("[IP池] 跳过删除系统保留地址: %s\n", ipStr)
+		logger.Info("[IP池] 跳过删除系统保留地址: %s", ipStr)
 		return
 	}
 
@@ -969,37 +1117,9 @@ func (p *LocalIPPool) ReleaseIP(ip net.IP) {
 	interfaceName := p.ipv6Interface
 	p.mu.RUnlock()
 
-	if interfaceName == "" {
-		interfaceName = "ipv6net"
+	if p.deleteIPv6AddressFromSystem(ipStr, nil) {
+		logger.Info("[IP池] 已释放IPv6地址: %s/%s", ipStr, interfaceName)
 	}
-
-	link, err := netlink.LinkByName(interfaceName)
-	if err != nil {
-		fmt.Printf("[IP池] 警告: 获取接口 %s 失败: %v\n", interfaceName, err)
-		return
-	}
-
-	addr, err := netlink.ParseAddr(ipStr + "/128")
-	if err != nil {
-		fmt.Printf("[IP池] 警告: 解析IPv6地址 %s 失败: %v\n", ipStr, err)
-		return
-	}
-
-	if err := netlink.AddrDel(link, addr); err != nil {
-		fmt.Printf("[IP池] 警告: 删除IPv6地址 %s 失败: %v\n", ipStr, err)
-	} else {
-		fmt.Printf("[IP池] 已释放IPv6地址: %s/%s\n", ipStr, interfaceName)
-	}
-
-	// 从已创建地址映射中移除
-	p.createdIPv6Mutex.Lock()
-	delete(p.createdIPv6Addrs, ipStr)
-	p.createdIPv6Mutex.Unlock()
-
-	// 从活跃地址映射中移除
-	p.activeIPv6Mutex.Lock()
-	delete(p.activeIPv6Addrs, ipStr)
-	p.activeIPv6Mutex.Unlock()
 }
 
 // MarkIPUnused 标记IPv6地址为未使用（减少引用计数，不立即删除，等待定期清理）
@@ -1075,13 +1195,13 @@ func (p *LocalIPPool) cleanupOldIPv6Addresses(subnet *net.IPNet) {
 
 	link, err := netlink.LinkByName(interfaceName)
 	if err != nil {
-		fmt.Printf("[IP池] 警告: 无法获取接口 %s 的IPv6地址列表: %v\n", interfaceName, err)
+		logger.Warn("[IP池] 警告: 无法获取接口 %s 的IPv6地址列表: %v", interfaceName, err)
 		return
 	}
 
 	addrs, err := netlink.AddrList(link, netlink.FAMILY_V6)
 	if err != nil {
-		fmt.Printf("[IP池] 警告: 无法获取接口 %s 的IPv6地址列表: %v\n", interfaceName, err)
+		logger.Warn("[IP池] 警告: 无法获取接口 %s 的IPv6地址列表: %v", interfaceName, err)
 		return
 	}
 
@@ -1121,13 +1241,10 @@ func (p *LocalIPPool) cleanupOldIPv6Addresses(subnet *net.IPNet) {
 	}
 
 	if cleaned > 0 {
-		fmt.Printf("[IP池] 启动时已清理 %d 个旧IPv6地址", cleaned)
+		logger.Info("[IP池] 启动时已清理多个旧IPv6地址: %d", cleaned)
 		if skipped > 0 {
-			fmt.Printf("，跳过了 %d 个系统保留地址", skipped)
+			logger.Info("[IP池] 启动时跳过了多个系统保留地址（如 ::2），未清理任何地址: %d", skipped)
 		}
-		fmt.Println()
-	} else if skipped > 0 {
-		fmt.Printf("[IP池] 启动时跳过了 %d 个系统保留地址（如 ::2），未清理任何地址\n", skipped)
 	}
 }
 
@@ -1185,7 +1302,7 @@ func (p *LocalIPPool) adjustIPv6AddressPool() {
 		needed := minActive - activeCount
 		// 如果差距较大（>=batchSize），批量创建
 		if needed >= batchSize {
-			p.batchCreateIPv6Addresses(batchSize, subnet, interfaceName)
+			p.batchCreateIPv6Addresses(batchSize, interfaceName)
 		}
 		// 如果差距较小（<batchSize），让GetIP()按需创建即可，避免频繁批量操作
 	}
@@ -1193,17 +1310,22 @@ func (p *LocalIPPool) adjustIPv6AddressPool() {
 
 // batchCreateIPv6Addresses 批量创建IPv6地址
 // 返回值：实际创建的地址数量
-func (p *LocalIPPool) batchCreateIPv6Addresses(count int, subnet *net.IPNet, interfaceName string) int {
+func (p *LocalIPPool) batchCreateIPv6Addresses(count int, interfaceName string) int {
 	link, err := netlink.LinkByName(interfaceName)
 	if err != nil {
 		// 接口不存在，无法创建
+		logger.Warn("[IP池] 批量创建IPv6地址失败: 无法获取接口 %s: %v", interfaceName, err)
 		return 0
 	}
 
 	created := 0
+	failed := 0
+	skipped := 0
+	permissionErrorShown := false // 标记是否已显示权限错误提示
 	for i := 0; i < count; i++ {
 		ip := p.generateRandomIPInSubnet()
 		if ip == nil {
+			skipped++
 			continue
 		}
 
@@ -1216,11 +1338,12 @@ func (p *LocalIPPool) batchCreateIPv6Addresses(count int, subnet *net.IPNet, int
 
 		if alreadyActive {
 			// 地址已在活跃列表中，跳过
+			skipped++
 			continue
 		}
 
-		// 检查地址是否已在系统上存在
-		if p.isIPv6AddressExists(ipStr) {
+		// 检查地址是否已在系统上存在（传递已获取的 link 以避免重复打开文件描述符）
+		if p.isIPv6AddressExists(ipStr, link) {
 			// 地址已存在，记录但不创建
 			p.createdIPv6Mutex.Lock()
 			p.createdIPv6Addrs[ipStr] = true
@@ -1235,10 +1358,25 @@ func (p *LocalIPPool) batchCreateIPv6Addresses(count int, subnet *net.IPNet, int
 		addr, err := netlink.ParseAddr(ipStr + "/128")
 		if err != nil {
 			// 解析失败，跳过
+			failed++
+			logger.Warn("[IP池] 批量创建IPv6地址失败: 解析地址失败 %s: %v", ipStr, err)
 			continue
 		}
 		if err := netlink.AddrAdd(link, addr); err != nil {
-			// 创建失败，静默跳过（批量创建时不需要每个都打印）
+			// 创建失败，记录错误
+			failed++
+
+			// 检查是否是权限错误
+			if strings.Contains(err.Error(), "operation not permitted") ||
+				strings.Contains(err.Error(), "permission denied") {
+				if !permissionErrorShown {
+					permissionErrorShown = true
+					logger.Error("[IP池] 权限错误: 无法创建IPv6地址，需要root权限或CAP_NET_ADMIN能力 (interfaceName=%s, suggestion=请以root权限运行程序，或使用: sudo setcap cap_net_admin+ep <程序路径>)", interfaceName)
+				}
+			} else if failed <= 10 {
+				// 其他错误，前10个详细记录
+				logger.Warn("[IP池] 批量创建IPv6地址失败: ipv6=%s, interfaceName=%s, error=%v", ipStr, interfaceName, err)
+			}
 			continue
 		}
 
@@ -1253,14 +1391,21 @@ func (p *LocalIPPool) batchCreateIPv6Addresses(count int, subnet *net.IPNet, int
 		created++
 	}
 
+	// 批量创建完成后，汇总日志
+	if failed > 0 {
+		logger.Warn("[IP池] 批量创建IPv6地址完成: requested=%d, created=%d, failed=%d, skipped=%d, interfaceName=%s", count, created, failed, skipped, interfaceName)
+	} else if created > 0 {
+		logger.Info("[IP池] 批量创建IPv6地址完成: requested=%d, created=%d, skipped=%d, interfaceName=%s", count, created, skipped, interfaceName)
+	}
+
 	return created
 }
 
 // batchDeleteIPv6Addresses 批量删除IPv6地址（删除指定的地址列表）
-func (p *LocalIPPool) batchDeleteIPv6Addresses(count int, interfaceName string, addrsToDelete []string) {
+func (p *LocalIPPool) batchDeleteIPv6Addresses(interfaceName string, addrsToDelete []string) {
 	link, err := netlink.LinkByName(interfaceName)
 	if err != nil {
-		fmt.Printf("[IP池] 警告: 批量删除时获取接口 %s 失败: %v\n", interfaceName, err)
+		logger.Warn("[IP池] 警告: 批量删除时获取接口 %s 失败: %v", interfaceName, err)
 		return
 	}
 
@@ -1271,37 +1416,21 @@ func (p *LocalIPPool) batchDeleteIPv6Addresses(count int, interfaceName string, 
 		ip := net.ParseIP(ipStr)
 		if ip != nil && isReservedIPv6Address(ip) {
 			skipped++
-			fmt.Printf("[IP池] 跳过删除系统保留地址: %s\n", ipStr)
+			logger.Info("[IP池] 跳过删除系统保留地址: %s", ipStr)
 			continue
 		}
 
-		addr, err := netlink.ParseAddr(ipStr + "/128")
-		if err != nil {
-			fmt.Printf("[IP池] 警告: 批量删除时解析IPv6地址 %s 失败: %v\n", ipStr, err)
-			continue
+		if p.deleteIPv6AddressFromSystem(ipStr, link) {
+			deleted++
 		}
-		if err := netlink.AddrDel(link, addr); err != nil {
-			fmt.Printf("[IP池] 警告: 批量删除IPv6地址 %s 失败: %v\n", ipStr, err)
-			continue
-		}
-
-		// 从映射中移除
-		p.createdIPv6Mutex.Lock()
-		delete(p.createdIPv6Addrs, ipStr)
-		p.createdIPv6Mutex.Unlock()
-		p.activeIPv6Mutex.Lock()
-		delete(p.activeIPv6Addrs, ipStr)
-		p.activeIPv6Mutex.Unlock()
-
-		deleted++
 	}
 
 	if skipped > 0 {
-		fmt.Printf("[IP池] 批量删除: 跳过了 %d 个系统保留地址（如 ::2）\n", skipped)
+		logger.Info("[IP池] 批量删除: 跳过了 %d 个系统保留地址（如 ::2）", skipped)
 	}
 
 	if deleted > 0 {
-		fmt.Printf("[IP池] 热加载: 批量删除了 %d 个IPv6地址\n", deleted)
+		logger.Info("[IP池] 热加载: 批量删除了 %d 个IPv6地址", deleted)
 	}
 }
 
@@ -1314,12 +1443,48 @@ func (p *LocalIPPool) SupportsDynamicPool() bool {
 	return p.hasIPv6Support && p.ipv6Queue != nil
 }
 
+// GetActiveIPv6Addresses 获取当前活跃的IPv6地址列表
+func (p *LocalIPPool) GetActiveIPv6Addresses() []string {
+	p.mu.RLock()
+	hasSupport := p.hasIPv6Support
+	p.mu.RUnlock()
+
+	if !hasSupport {
+		return nil
+	}
+
+	p.activeIPv6Mutex.RLock()
+	defer p.activeIPv6Mutex.RUnlock()
+
+	// 创建地址列表的副本
+	addresses := make([]string, 0, len(p.activeIPv6Addrs))
+	for addrStr := range p.activeIPv6Addrs {
+		addresses = append(addresses, addrStr)
+	}
+
+	return addresses
+}
+
+// GetIPv4Addresses 获取IPv4地址列表
+func (p *LocalIPPool) GetIPv4Addresses() []string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	// 创建IPv4地址列表的副本
+	addresses := make([]string, 0, len(p.staticIPv4s))
+	for _, ip := range p.staticIPv4s {
+		addresses = append(addresses, ip.String())
+	}
+
+	return addresses
+}
+
 // SetTargetIPCount 设置目标IP数量（用于IPv6地址池动态调整）
 // 目标：创建与RemoteDomainIPPool对等的IPv6地址池
 func (p *LocalIPPool) SetTargetIPCount(count int) {
 	// 如果当前模式不支持动态池，则打印警告并直接返回。
 	if !p.SupportsDynamicPool() {
-		fmt.Println("[IP池] 警告: 调用 SetTargetIPCount 被忽略，因为未启用IPv6动态地址池功能。")
+		logger.Warn("[IP池] 警告: 调用 SetTargetIPCount 被忽略，因为未启用IPv6动态地址池功能。count=%d", count)
 		return
 	}
 
@@ -1339,7 +1504,6 @@ func (p *LocalIPPool) SetTargetIPCount(count int) {
 		p.activeIPv6Mutex.RUnlock()
 
 		p.mu.RLock()
-		subnet := p.ipv6Subnet
 		interfaceName := p.ipv6Interface
 		p.mu.RUnlock()
 
@@ -1352,8 +1516,8 @@ func (p *LocalIPPool) SetTargetIPCount(count int) {
 			needed := count - activeCount
 			// 一次性创建所有需要的地址，确保与RemoteDomainIPPool完全对等
 			// 注意：batchCreateIPv6Addresses会直接创建地址，不会调用ensureIPv6AddressCreated
-			createdCount := p.batchCreateIPv6Addresses(needed, subnet, interfaceName)
-			fmt.Printf("[IP池] 已批量创建 %d 个IPv6地址，与目标IP数量对等（总数: %d，RemoteDomainIPPool: %d）\n", createdCount, count, count)
+			createdCount := p.batchCreateIPv6Addresses(needed, interfaceName)
+			logger.Info("[IP池] 已批量创建了IPv6地址，与目标IP数量对等: createdCount=%d, totalCount=%d, remoteDomainIPPool=%d", createdCount, count, count)
 		} else if activeCount > count {
 			// 如果当前活跃地址超过目标值，删除多余的未使用地址
 			p.activeIPv6Mutex.RLock()
@@ -1376,13 +1540,13 @@ func (p *LocalIPPool) SetTargetIPCount(count int) {
 				if toDelete > len(unusedAddrs) {
 					toDelete = len(unusedAddrs)
 				}
-				p.batchDeleteIPv6Addresses(toDelete, interfaceName, unusedAddrs[:toDelete])
-				fmt.Printf("[IP池] 已删除 %d 个多余的IPv6地址，保持与目标IP数量对等\n", toDelete)
+				p.batchDeleteIPv6Addresses(interfaceName, unusedAddrs[:toDelete])
+				logger.Info("[IP池] 已删除 %d 个多余的IPv6地址，保持与目标IP数量对等", toDelete)
 			}
 		}
 	}
 
-	fmt.Printf("[IP池] 已设置目标IP数量: %d，IPv6地址池大小: %d（与RemoteDomainIPPool对等）\n", count, count)
+	logger.Info("[IP池] 已设置目标IP数量，IPv6地址池大小（与RemoteDomainIPPool对等）: targetCount=%d, poolSize=%d", count, count)
 }
 
 // cleanupUnusedIPv6Addresses 每20分钟清理一次未使用的IPv6地址，并替换为新地址
@@ -1445,8 +1609,8 @@ func (p *LocalIPPool) cleanupUnusedIPv6Addresses() {
 	// 1. 如果活跃地址少于目标值，创建新地址补充
 	if activeCount < minActive {
 		needed := minActive - activeCount
-		p.batchCreateIPv6Addresses(needed, subnet, interfaceName)
-		fmt.Printf("[IP池] 定期清理: 补充创建了 %d 个IPv6地址，保持与目标IP数量对等\n", needed)
+		p.batchCreateIPv6Addresses(needed, interfaceName)
+		logger.Info("[IP池] 定期清理: 补充创建了 %d 个IPv6地址，保持与目标IP数量对等", needed)
 		return
 	}
 
@@ -1454,12 +1618,12 @@ func (p *LocalIPPool) cleanupUnusedIPv6Addresses() {
 	if activeCount == minActive {
 		if len(unusedAddrs) > 0 {
 			// 删除所有空闲地址
-			p.batchDeleteIPv6Addresses(len(unusedAddrs), interfaceName, unusedAddrs)
+			p.batchDeleteIPv6Addresses(interfaceName, unusedAddrs)
 			// 创建相同数量的新地址替换
-			p.batchCreateIPv6Addresses(len(unusedAddrs), subnet, interfaceName)
-			fmt.Printf("[IP池] 定期清理: 替换了 %d 个空闲IPv6地址（20分钟周期）\n", len(unusedAddrs))
+			p.batchCreateIPv6Addresses(len(unusedAddrs), interfaceName)
+			logger.Info("[IP池] 定期清理: 替换了 %d 个空闲IPv6地址（20分钟周期）", len(unusedAddrs))
 		} else {
-			fmt.Printf("[IP池] 定期清理: 所有地址都在使用中，等待空闲后再替换\n")
+			logger.Info("[IP池] 定期清理: 所有地址都在使用中，等待空闲后再替换")
 		}
 		return
 	}
@@ -1473,8 +1637,8 @@ func (p *LocalIPPool) cleanupUnusedIPv6Addresses() {
 			if toDelete > len(unusedAddrs) {
 				toDelete = len(unusedAddrs)
 			}
-			p.batchDeleteIPv6Addresses(toDelete, interfaceName, unusedAddrs[:toDelete])
-			fmt.Printf("[IP池] 定期清理: 删除了 %d 个多余的IPv6地址，保持与目标IP数量对等\n", toDelete)
+			p.batchDeleteIPv6Addresses(interfaceName, unusedAddrs[:toDelete])
+			logger.Info("[IP池] 定期清理: 删除了 %d 个多余的IPv6地址，保持与目标IP数量对等", toDelete)
 		}
 	}
 }
