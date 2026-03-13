@@ -3,30 +3,30 @@
 <cite>
 **本文档引用的文件**
 - [utlsclient.go](file://utlsclient/utlsclient.go)
-- [interfaces.go](file://utlsclient/interfaces.go)
 - [connection_manager.go](file://utlsclient/connection_manager.go)
-- [constants.go](file://utlsclient/constants.go)
 - [utlshotconnpool.go](file://utlsclient/utlshotconnpool.go)
-- [test_helpers.go](file://utlsclient/test_helpers.go)
-- [example_basic_usage.go](file://examples/utlsclient/example_basic_usage.go)
-- [example_utlsclient_usage.go](file://examples/utlsclient/example_utlsclient_usage.go)
-- [main.go](file://cmd/utlsclient/main.go)
-- [utlsclient_test.go](file://test/utlsclient/utlsclient_test.go)
+- [pool_manager.go](file://utlsclient/pool_manager.go)
+- [validator.go](file://utlsclient/validator.go)
+- [errors.go](file://utlsclient/errors.go)
+- [utlsfingerprint.go](file://utlsclient/utlsfingerprint.go)
+- [tcpfingerprint.go](file://utlsclient/tcpfingerprint.go)
+- [whitelist.go](file://utlsclient/whitelist.go)
 </cite>
 
 ## 目录
 1. [简介](#简介)
 2. [项目架构概览](#项目架构概览)
 3. [核心组件分析](#核心组件分析)
-4. [UTLSClient 构造与初始化](#utlsclient-构造与初始化)
-5. [请求执行流程](#请求执行流程)
-6. [快捷方法详解](#快捷方法详解)
-7. [配置与优化](#配置与优化)
-8. [连接管理机制](#连接管理机制)
-9. [错误处理与重试](#错误处理与重试)
-10. [性能特征与最佳实践](#性能特征与最佳实践)
-11. [故障排除指南](#故障排除指南)
-12. [总结](#总结)
+4. [Client 构造与初始化](#client-构造与初始化)
+5. [连接获取与释放流程](#连接获取与释放流程)
+6. [请求执行流程](#请求执行流程)
+7. [快捷方法详解](#快捷方法详解)
+8. [配置与优化](#配置与优化)
+9. [连接管理机制](#连接管理机制)
+10. [错误处理与重试](#错误处理与重试)
+11. [性能特征与最佳实践](#性能特征与最佳实践)
+12. [故障排除指南](#故障排除指南)
+13. [总结](#总结)
 
 ## 简介
 
@@ -46,13 +46,17 @@ UTLSClient 是一个基于 uTLS（Universal TLS）库的高级 HTTP 客户端，
 ```mermaid
 graph TB
 subgraph "用户接口层"
-HTTPClient[HTTPClient 接口]
-UTLSClient[UTLSClient 实现]
+Client[Client 接口]
 end
 subgraph "连接管理层"
 ConnManager[ConnectionManager]
 UTLSConnection[UTLSConnection]
-HotConnPool[UTLSHotConnPool]
+end
+subgraph "池管理器层"
+PoolManager[PoolManager]
+Validator[Validator]
+Blacklist[Blacklist]
+RemoteIPPool[RemoteIPPool]
 end
 subgraph "底层传输层"
 uTLS[uTLS 库]
@@ -60,130 +64,170 @@ TCP[TCP 连接]
 TLS[TLS 握手]
 end
 subgraph "工具组件"
-Logger[日志系统]
-Validator[连接验证器]
 Fingerprint[指纹库]
+TCPFingerprint[TCP 指纹]
+Logger[日志系统]
 end
-HTTPClient --> UTLSClient
-UTLSClient --> ConnManager
+Client --> PoolManager
+PoolManager --> ConnManager
+PoolManager --> Validator
+PoolManager --> Blacklist
+PoolManager --> RemoteIPPool
 ConnManager --> UTLSConnection
-UTLSConnection --> HotConnPool
 UTLSConnection --> uTLS
 uTLS --> TCP
 uTLS --> TLS
-UTLSClient --> Logger
-HotConnPool --> Validator
-HotConnPool --> Fingerprint
+Client --> Logger
+Fingerprint --> UTLSConnection
+TCPFingerprint --> UTLSConnection
 ```
 
 **图表来源**
-- [utlsclient.go](file://utlsclient/utlsclient.go#L37-L43)
-- [connection_manager.go](file://utlsclient/connection_manager.go#L8-L14)
-- [utlshotconnpool.go](file://utlsclient/utlshotconnpool.go#L204-L233)
+- [utlsclient.go:27-55](file://utlsclient/utlsclient.go#L27-L55)
+- [pool_manager.go:21-52](file://utlsclient/pool_manager.go#L21-L52)
+- [connection_manager.go:8-25](file://utlsclient/connection_manager.go#L8-L25)
 
 ## 核心组件分析
 
-### UTLSClient 结构体
+### Client 结构体
 
-UTLSClient 是整个系统的核心组件，封装了 uTLS 连接并提供了高级 HTTP 请求功能。
+Client 是整个系统的核心组件，封装了连接池管理、健康检查和连接获取释放等功能。
 
 ```mermaid
 classDiagram
-class UTLSClient {
-+UTLSConnection conn
-+time.Duration timeout
-+string userAgent
-+int maxRetries
-+NewUTLSClient(conn *UTLSConnection) *UTLSClient
-+SetTimeout(timeout time.Duration)
-+SetUserAgent(userAgent string)
-+SetMaxRetries(maxRetries int)
-+Do(req *http.Request) (*http.Response, error)
-+DoWithContext(ctx context.Context, req *http.Request) (*http.Response, error)
-+Get(url string) (*http.Response, error)
-+Post(url string, contentType string, body io.Reader) (*http.Response, error)
-+Head(url string) (*http.Response, error)
+class Client {
++*PoolConfig config
++*ConnectionManager connManager
++*Blacklist blacklist
++*PoolManager poolManager
++chan stopChan
++sync.WaitGroup wg
++bool running
++sync.Mutex mu
++NewClient(config *PoolConfig, remotePool RemoteIPPool) *Client
++Start()
++Stop()
++GetConnectionForHost(host string) *UTLSConnection
++ReleaseConnection(conn *UTLSConnection)
++maintenanceLoop()
++healthCheck()
++quickHealthCheck(conn *UTLSConnection)
 }
-class UTLSConnection {
-+net.Conn conn
-+*utls.UConn tlsConn
-+string targetIP
-+string targetHost
-+Profile fingerprint
-+string acceptLanguage
-+interface{} h2ClientConn
-+sync.Mutex h2Mu
-+time.Time created
-+time.Time lastUsed
-+bool inUse
-+bool healthy
-+int64 requestCount
-+int64 errorCount
-+RoundTripRaw(ctx context.Context, rawReq []byte) (io.Reader, error)
-+Close() error
-+TargetHost() string
-+TargetIP() string
-+Fingerprint() Profile
-+Stats() ConnectionStats
+class PoolManager {
++*ConnectionManager connManager
++*Blacklist blacklist
++Validator validator
++*PoolConfig config
++*RemoteIPPool remotePool
++chan stopChan
++sync.WaitGroup wg
++sync.Once initOnce
++atomic.Int32 initialized
++Start()
++Stop()
++IsInitialized() bool
++maintenanceLoop()
++maintainPoolFromRemoteIPs(isInitial bool)
++maintainPoolFromWhitelist()
++preWarmConnectionsBatch(domain string, ips []string, limit chan struct{}) int
++checkBlacklistRecovery()
 }
 class ConnectionManager {
 +sync.RWMutex mu
 +map[string]*UTLSConnection connections
 +map[string][]string hostMapping
 +*PoolConfig config
++func quickHealthCheckCallback
++NewConnectionManager(config *PoolConfig) *ConnectionManager
 +AddConnection(conn *UTLSConnection)
-+GetConnection(ip string) *UTLSConnection
 +RemoveConnection(ip string)
++GetConnection(ip string) *UTLSConnection
 +GetConnectionsForHost(host string) []*UTLSConnection
++GetAllConnectionsForHost(host string) []*UTLSConnection
++GetAllConnections() []*UTLSConnection
++SetQuickHealthCheckCallback(callback func(*UTLSConnection))
++Close()
 +CleanupIdleConnections() int
-+CleanupExpiredConnections(maxLifetime time.Duration) int
 }
-UTLSClient --> UTLSConnection : "使用"
-ConnectionManager --> UTLSConnection : "管理"
-UTLSClient --> ConnectionManager : "依赖"
+class UTLSConnection {
++net.Conn conn
++*utls.UConn tlsConn
++string targetIP
++string targetHost
++string localIP
++Profile fingerprint
++string acceptLanguage
++string sessionID
++h2ClientConn *http2.ClientConn
++h2Mu sync.Mutex
++time.Time created
++time.Time lastUsed
++bool healthy
++bool inUse
++bool recovering
++int64 requestCount
++int64 errorCount
++on403 func(ip string)
++onQuickHealthCheck func(conn *UTLSConnection)
++sync.Mutex mu
++TargetIP() string
++TargetHost() string
++LocalIP() string
++RequestCount() int64
++IsHealthy() bool
++TryAcquire() bool
++SetSessionID(sessionID string)
++Close() error
++RoundTrip(req *http.Request) (*http.Response, error)
++roundTripH1(req *http.Request) (*http.Response, error)
++roundTripH2(req *http.Request) (*http.Response, error)
++markAsUnhealthy()
++handle403()
+}
 ```
 
 **图表来源**
-- [utlsclient.go](file://utlsclient/utlsclient.go#L37-L43)
-- [utlshotconnpool.go](file://utlsclient/utlshotconnpool.go#L204-L233)
-- [connection_manager.go](file://utlsclient/connection_manager.go#L8-L14)
+- [utlsclient.go:14-25](file://utlsclient/utlsclient.go#L14-L25)
+- [pool_manager.go:21-52](file://utlsclient/pool_manager.go#L21-L52)
+- [connection_manager.go:8-25](file://utlsclient/connection_manager.go#L8-L25)
+- [utlshotconnpool.go:22-52](file://utlsclient/utlshotconnpool.go#L22-L52)
 
 **章节来源**
-- [utlsclient.go](file://utlsclient/utlsclient.go#L37-L43)
-- [utlshotconnpool.go](file://utlsclient/utlshotconnpool.go#L204-L233)
-- [connection_manager.go](file://utlsclient/connection_manager.go#L8-L14)
+- [utlsclient.go:14-25](file://utlsclient/utlsclient.go#L14-L25)
+- [pool_manager.go:21-52](file://utlsclient/pool_manager.go#L21-L52)
+- [connection_manager.go:8-25](file://utlsclient/connection_manager.go#L8-L25)
+- [utlshotconnpool.go:22-52](file://utlsclient/utlshotconnpool.go#L22-L52)
 
-## UTLSClient 构造与初始化
+## Client 构造与初始化
 
-### NewUTLSClient 构造函数
+### NewClient 构造函数
 
-NewUTLSClient 是创建 UTLSClient 实例的主要入口点，接受一个 UTLSConnection 作为参数。
+NewClient 是创建 UTLSClient 实例的主要入口点，接受配置和远程IP池提供者作为参数。
 
 #### 参数要求
 
 | 参数 | 类型 | 必需 | 描述 |
 |------|------|------|------|
-| conn | *UTLSConnection | 是 | 已建立的 uTLS 连接对象 |
+| config | *PoolConfig | 是 | 连接池配置对象 |
+| remotePool | RemoteIPPool | 是 | 远程IP池提供者接口 |
 
 #### 初始化过程
 
 ```mermaid
 flowchart TD
-Start([开始初始化]) --> ValidateConn["验证连接参数"]
-ValidateConn --> CreateClient["创建 UTLSClient 实例"]
-CreateClient --> SetDefaults["设置默认值"]
-SetDefaults --> Timeout["设置超时: 30秒"]
-SetUserAgent["设置 User-Agent<br/>从连接指纹获取"]
-SetMaxRetries["设置最大重试次数: 3"]
-SetDefaults --> Timeout
-Timeout --> SetUserAgent
-SetUserAgent --> SetMaxRetries
-SetMaxRetries --> Return["返回客户端实例"]
+Start([开始初始化]) --> ValidateParams["验证配置和远程IP池参数"]
+ValidateParams --> CreateBlacklist["创建黑名单管理器"]
+CreateBlacklist --> CreateConnManager["创建连接管理器"]
+CreateConnManager --> CreateValidator["创建验证器"]
+CreateValidator --> CreatePoolManager["创建池管理器"]
+CreatePoolManager --> CreateClient["创建Client实例"]
+CreateClient --> SetFields["设置Client字段"]
+SetFields --> Return["返回Client实例"]
 Return --> End([初始化完成])
 ```
 
 **图表来源**
-- [utlsclient.go](file://utlsclient/utlsclient.go#L46-L52)
+- [utlsclient.go:27-55](file://utlsclient/utlsclient.go#L27-L55)
 
 #### 默认配置
 
@@ -192,66 +236,123 @@ Return --> End([初始化完成])
 - **最大重试次数**：3 次
 
 **章节来源**
-- [utlsclient.go](file://utlsclient/utlsclient.go#L46-L52)
+- [utlsclient.go:27-55](file://utlsclient/utlsclient.go#L27-L55)
+
+## 连接获取与释放流程
+
+### GetConnectionForHost 方法
+
+GetConnectionForHost 是获取可用连接的核心方法，实现了智能连接选择和健康检查。
+
+#### 连接获取流程
+
+```mermaid
+sequenceDiagram
+participant Client as Client
+participant ConnManager as ConnectionManager
+participant PoolManager as PoolManager
+participant Conn as UTLSConnection
+Client->>ConnManager : GetConnectionsForHost(host)
+alt 有健康连接
+ConnManager-->>Client : 返回健康连接列表
+Client->>Client : 随机选择起始位置
+loop 遍历连接
+Client->>Conn : TryAcquire()
+alt 获取成功
+Conn-->>Client : 返回连接
+else 获取失败
+Client->>Client : 继续下一个连接
+end
+end
+else 无健康连接
+ConnManager-->>Client : 返回nil
+alt PoolManager未初始化
+Client->>Client : 返回"PoolManager正在预热中"错误
+else PoolManager已初始化
+Client->>Client : 返回"没有可用连接"错误
+end
+end
+```
+
+**图表来源**
+- [utlsclient.go:94-144](file://utlsclient/utlsclient.go#L94-L144)
+
+#### 连接释放流程
+
+```mermaid
+flowchart TD
+Start([开始释放连接]) --> ValidateConn["验证连接参数"]
+ValidateConn --> LockConn["获取连接锁"]
+LockConn --> CheckHealthy{"连接是否健康?"}
+CheckHealthy --> |否| TriggerQuickCheck["触发快速健康检查"]
+TriggerQuickCheck --> UnlockConn["释放连接锁"]
+UnlockConn --> ReleaseLocalIP["释放本地IP引用计数"]
+ReleaseLocalIP --> End([释放完成])
+CheckHealthy --> |是| CheckInUse{"连接是否在使用中?"}
+CheckInUse --> |否| LogWarning["记录调试日志"]
+LogWarning --> UnlockConn
+CheckInUse --> |是| MarkNotInUse["标记连接为未使用"]
+MarkNotInUse --> UnlockConn
+UnlockConn --> ReleaseLocalIP
+```
+
+**图表来源**
+- [utlsclient.go:146-206](file://utlsclient/utlsclient.go#L146-L206)
+
+**章节来源**
+- [utlsclient.go:94-144](file://utlsclient/utlsclient.go#L94-L144)
+- [utlsclient.go:146-206](file://utlsclient/utlsclient.go#L146-L206)
 
 ## 请求执行流程
 
-### Do 和 DoWithContext 方法
+### RoundTrip 方法
 
-这两个方法是 UTLSClient 的核心请求执行入口，提供了基础的 HTTP 请求功能。
+RoundTrip 是 UTLSConnection 的核心请求执行方法，提供了完整的HTTP请求-响应处理。
 
 #### 请求执行流程
 
 ```mermaid
 sequenceDiagram
-participant Client as UTLSClient
 participant Conn as UTLSConnection
+participant TLS as TLS层
 participant Transport as 传输层
 participant Server as 目标服务器
-Client->>Client : 设置请求头User-Agent、Accept-Language
-Client->>Client : 设置 Host 头
-Client->>Client : 计算重试次数循环
-loop 重试循环 (maxRetries + 1)
-Client->>Client : 创建带超时的上下文
-Client->>Client : 检测协商的协议
+Conn->>Conn : 设置必要请求头
+Conn->>TLS : 获取协商协议版本
 alt HTTP/2 协议
-Client->>Transport : doHTTP2Request
-Transport->>Transport : 获取或创建 HTTP/2 连接
-Transport->>Server : 发送 HTTP/2 请求
-Server-->>Transport : HTTP/2 响应
+TLS-->>Conn : "h2"
+Conn->>Conn : roundTripH2
+Conn->>Transport : 创建或获取HTTP/2连接
+Transport->>Server : 发送HTTP/2请求
+Server-->>Transport : HTTP/2响应
 else HTTP/1.1 协议
-Client->>Client : buildRawRequest
-Client->>Transport : doHTTP1Request
-Transport->>Server : 发送原始 HTTP 请求
-Server-->>Transport : HTTP/1.1 响应
+TLS-->>Conn : "http/1.1"
+Conn->>Conn : roundTripH1
+Conn->>Server : 发送HTTP/1.1请求
+Server-->>Conn : HTTP/1.1响应
 end
-alt 请求成功
-Transport-->>Client : 返回响应
-Client-->>Client : 更新连接统计
-Client-->>Client : 返回最终响应
-else 请求失败
-Client->>Client : 记录错误
-Client->>Client : 等待重试延迟
+alt 403错误
+Conn->>Conn : handle403
+Conn->>Conn : 标记为不健康
+else 正常响应
+Conn->>Conn : 更新统计信息
 end
-end
-Client-->>Client : 返回最终错误
+Conn-->>Conn : 返回响应
 ```
 
 **图表来源**
-- [utlsclient.go](file://utlsclient/utlsclient.go#L80-L118)
-- [utlsclient.go](file://utlsclient/utlsclient.go#L121-L140)
+- [utlshotconnpool.go:156-238](file://utlsclient/utlshotconnpool.go#L156-L238)
 
 #### 协议自动检测机制
 
-UTLSClient 能够自动检测与服务器协商的协议版本：
+UTLSConnection 能够自动检测与服务器协商的协议版本：
 
 1. **HTTP/2 检测**：通过 `ConnectionState().NegotiatedProtocol` 检查是否为 "h2"
 2. **HTTP/1.1 回退**：当未协商 HTTP/2 时自动使用 HTTP/1.1
 3. **连接复用**：HTTP/2 连接支持多路复用，提高并发性能
 
 **章节来源**
-- [utlsclient.go](file://utlsclient/utlsclient.go#L80-L118)
-- [utlsclient.go](file://utlsclient/utlsclient.go#L121-L140)
+- [utlshotconnpool.go:156-238](file://utlsclient/utlshotconnpool.go#L156-L238)
 
 ## 快捷方法详解
 
@@ -300,9 +401,30 @@ UTLSClient 能够自动检测与服务器协商的协议版本：
 - 减少服务器负载
 
 **章节来源**
-- [utlsclient.go](file://utlsclient/utlsclient.go#L365-L391)
+- [utlsclient.go:365-391](file://utlsclient/utlsclient.go#L365-L391)
 
 ## 配置与优化
+
+### PoolConfig 配置
+
+PoolConfig 定义了整个客户端和连接池的配置。
+
+#### 配置项说明
+
+| 配置项 | 类型 | 默认值 | 描述 |
+|--------|------|--------|------|
+| MaxConnsPerHost | int | 0 | 每主机最大连接数 |
+| PreWarmInterval | time.Duration | 5m | 预热间隔时间 |
+| MaxConcurrentPreWarms | int | 10 | 最大并发预热数 |
+| ConnTimeout | time.Duration | 30s | 连接超时时间 |
+| IdleTimeout | time.Duration | 60s | 空闲超时时间 |
+| MaxConnLifetime | time.Duration | 300s | 连接最大生命周期 |
+| HealthCheckInterval | time.Duration | 5m | 健康检查间隔 |
+| IPBlacklistTimeout | time.Duration | 300s | IP黑名单超时 |
+| BlacklistCheckInterval | time.Duration | 0 | 黑名单恢复检查间隔 |
+| HealthCheckPath | string | "/rt/earth/PlanetoidMetadata" | 健康检查路径 |
+| SessionIdPath | string | "" | 获取SessionID的路径 |
+| SessionIdBody | []byte | "" | 获取SessionID的请求体 |
 
 ### SetTimeout 方法
 
@@ -347,7 +469,7 @@ FinalError --> End
 ```
 
 **图表来源**
-- [utlsclient.go](file://utlsclient/utlsclient.go#L104-L118)
+- [utlsclient.go:104-118](file://utlsclient/utlsclient.go#L104-L118)
 
 #### 推荐配置
 - **低延迟网络**：2-3 次重试
@@ -355,7 +477,7 @@ FinalError --> End
 - **不稳定网络**：5-10 次重试
 
 **章节来源**
-- [utlsclient.go](file://utlsclient/utlsclient.go#L55-L67)
+- [utlsclient.go:55-67](file://utlsclient/utlsclient.go#L55-L67)
 
 ## 连接管理机制
 
@@ -388,7 +510,7 @@ responseBody --> UTLSConnection : "共享连接"
 ```
 
 **图表来源**
-- [utlsclient.go](file://utlsclient/utlsclient.go#L333-L363)
+- [utlsclient.go:333-363](file://utlsclient/utlsclient.go#L333-L363)
 
 #### 生命周期管理
 
@@ -403,7 +525,7 @@ responseBody --> UTLSConnection : "共享连接"
 - **并发安全**：使用互斥锁保护状态变更
 
 **章节来源**
-- [utlsclient.go](file://utlsclient/utlsclient.go#L333-L363)
+- [utlsclient.go:333-363](file://utlsclient/utlsclient.go#L333-L363)
 
 ## 错误处理与重试
 
@@ -443,8 +565,8 @@ FinalError --> End
 ```
 
 **图表来源**
-- [utlsclient.go](file://utlsclient/utlsclient.go#L22-L35)
-- [utlsclient.go](file://utlsclient/utlsclient.go#L104-L118)
+- [utlsclient.go:22-35](file://utlsclient/utlsclient.go#L22-L35)
+- [utlsclient.go:104-118](file://utlsclient/utlsclient.go#L104-L118)
 
 ### 错误分类与处理策略
 
@@ -457,8 +579,8 @@ FinalError --> End
 | 协议错误 | 不重试 | 否 |
 
 **章节来源**
-- [utlsclient.go](file://utlsclient/utlsclient.go#L22-L35)
-- [utlsclient.go](file://utlsclient/utlsclient.go#L104-L118)
+- [utlsclient.go:22-35](file://utlsclient/utlsclient.go#L22-L35)
+- [utlsclient.go:104-118](file://utlsclient/utlsclient.go#L104-L118)
 
 ## 性能特征与最佳实践
 
@@ -509,8 +631,8 @@ config := &PoolConfig{
 - 合理设置超时时间平衡性能和可靠性
 
 **章节来源**
-- [connection_manager.go](file://utlsclient/connection_manager.go#L8-L14)
-- [utlshotconnpool.go](file://utlsclient/utlshotconnpool.go#L170-L200)
+- [connection_manager.go:8-14](file://utlsclient/connection_manager.go#L8-L14)
+- [utlshotconnpool.go:170-200](file://utlsclient/utlshotconnpool.go#L170-L200)
 
 ## 故障排除指南
 
@@ -588,8 +710,8 @@ fmt.Printf("请求次数: %d, 错误次数: %d, 健康状态: %v\n",
 ```
 
 **章节来源**
-- [utlsclient.go](file://utlsclient/utlsclient.go#L70-L78)
-- [utlshotconnpool.go](file://utlsclient/utlshotconnpool.go#L1234-L1245)
+- [utlsclient.go:70-78](file://utlsclient/utlsclient.go#L70-L78)
+- [utlshotconnpool.go:1234-1245](file://utlsclient/utlshotconnpool.go#L1234-L1245)
 
 ## 总结
 

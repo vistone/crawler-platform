@@ -282,6 +282,20 @@ func main() {
 					// 赋值给外层变量并注入到服务器
 					utlsClient = client
 					srv.SetUTLSClient(client)
+
+					// 启动指标监控后台任务（每30秒打印一次连接池指标）
+					go func() {
+						ticker := time.NewTicker(30 * time.Second)
+						defer ticker.Stop()
+						for {
+							select {
+							case <-ticker.C:
+								if utlsClient != nil {
+									log.Printf("[UTLS 指标] %s", utlsClient.GetMetricsJSON())
+								}
+							}
+						}
+					}()
 				}()
 			}
 		}

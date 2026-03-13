@@ -17,6 +17,7 @@ type Client struct {
 	connManager *ConnectionManager
 	blacklist   *Blacklist
 	poolManager *PoolManager
+	metrics     *ConnectionMetrics // 连接池指标收集器
 
 	stopChan chan struct{}
 	wg       sync.WaitGroup
@@ -50,6 +51,7 @@ func NewClient(config *PoolConfig, remotePool RemoteIPPool) (*Client, error) {
 		connManager: connManager,
 		blacklist:   blacklist,
 		poolManager: poolManager,
+		metrics:     NewConnectionMetrics(), // 初始化指标收集器
 		stopChan:    make(chan struct{}),
 	}, nil
 }
@@ -156,10 +158,28 @@ func (c *Client) ReleaseConnection(conn *UTLSConnection) {
 	localIPStr := conn.localIP
 	inUse := conn.inUse
 
+	// 检查连接是否真的在使用中
+	if !inUse {
+		// 连接未被使用，可能是重复释放
+		conn.mu.Unlock()
+		projlogger.Debug("尝试释放未使用的连接 %s", targetIP)
+		return
+	}
+
+	// 标记连接为未使用
+	conn.inUse = false
+	conn.mu.Unlock()
+
+	// 释放本地IP地址的引用计数（统一在这里释放，避免重复代码）
+	if localIPStr != "" && c.config.LocalIPPool != nil {
+		if localIP := net.ParseIP(localIPStr); localIP != nil {
+			c.config.LocalIPPool.MarkIPUnused(localIP)
+		}
+	}
+
 	// 如果连接不健康，触发快速健康检查恢复连接（不立即移除）
 	// 只有403错误才会在健康检查中移除连接
 	if !isHealthy {
-		conn.mu.Unlock()
 		// 检查连接是否还在连接池中
 		if c.connManager.GetConnection(targetIP) != nil {
 			// 连接不健康，触发快速健康检查恢复（不立即移除）
@@ -171,36 +191,6 @@ func (c *Client) ReleaseConnection(conn *UTLSConnection) {
 		} else {
 			// 连接已经被移除（可能是健康检查中确认了403），只记录调试日志
 			projlogger.Debug("连接 %s 已被移除（可能在健康检查中被移除）", targetIP)
-		}
-		// 即使连接不健康，也要释放 inUse 标志和IP地址引用计数
-		conn.mu.Lock()
-		conn.inUse = false
-		conn.mu.Unlock()
-		// 释放本地IP地址的引用计数
-		if localIPStr != "" && c.config.LocalIPPool != nil {
-			if localIP := net.ParseIP(localIPStr); localIP != nil {
-				c.config.LocalIPPool.MarkIPUnused(localIP)
-			}
-		}
-		return
-	}
-
-	// 检查连接是否真的在使用中
-	if !inUse {
-		// 连接未被使用，可能是重复释放
-		conn.mu.Unlock()
-		projlogger.Debug("尝试释放未使用的连接 %s", targetIP)
-		return
-	}
-
-	// 释放连接
-	conn.inUse = false
-	conn.mu.Unlock()
-
-	// 释放本地IP地址的引用计数（支持引用计数，允许多个连接复用同一个IP）
-	if localIPStr != "" && c.config.LocalIPPool != nil {
-		if localIP := net.ParseIP(localIPStr); localIP != nil {
-			c.config.LocalIPPool.MarkIPUnused(localIP)
 		}
 	}
 }
@@ -302,7 +292,7 @@ func (c *Client) healthCheck() {
 			// 使用配置的健康检查路径，如果没有配置则使用默认路径
 			healthCheckPath := c.config.HealthCheckPath
 			if healthCheckPath == "" {
-				healthCheckPath = "/rt/earth/PlanetoidMetadata" // 默认健康检查路径
+				healthCheckPath = DefaultHealthCheckPath // 使用默认健康检查路径
 			}
 
 			// 使用 GET 方法进行健康检查（因为需要验证返回 200）
@@ -386,7 +376,7 @@ func (c *Client) quickHealthCheck(conn *UTLSConnection) {
 		// 使用配置的健康检查路径
 		healthCheckPath := c.config.HealthCheckPath
 		if healthCheckPath == "" {
-			healthCheckPath = "/rt/earth/PlanetoidMetadata" // 默认健康检查路径
+			healthCheckPath = DefaultHealthCheckPath // 使用默认健康检查路径
 		}
 
 		// 使用 GET 方法进行健康检查
@@ -430,4 +420,27 @@ func (c *Client) quickHealthCheck(conn *UTLSConnection) {
 			projlogger.Debug("快速健康检查发现状态码 %d（非200），连接 %s 暂时不可用（连接保持健康状态，下次使用时会自动恢复）", resp.StatusCode, targetIP)
 		}
 	}()
+}
+
+// GetMetrics 获取当前连接池指标快照
+func (c *Client) GetMetrics() MetricsSnapshot {
+	if c.metrics == nil {
+		return MetricsSnapshot{}
+	}
+	return c.metrics.GetSnapshot()
+}
+
+// GetMetricsJSON 获取JSON格式的指标（便于日志或API输出）
+func (c *Client) GetMetricsJSON() string {
+	snapshot := c.GetMetrics()
+	return fmt.Sprintf(
+		"连接池指标 - 活跃: %d (健康: %d/不健康: %d), 总请求: %d, 成功率: %.1f%%, 健康率: %.1f%%, 拉黑IP: %d",
+		snapshot.ActiveConnections,
+		snapshot.HealthyConnections,
+		snapshot.UnhealthyConnections,
+		snapshot.TotalRequests,
+		snapshot.SuccessRate(),
+		snapshot.HealthRate(),
+		snapshot.BlacklistedIPs,
+	)
 }

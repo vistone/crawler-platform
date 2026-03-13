@@ -2,6 +2,7 @@ package utlsclient
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -248,16 +249,119 @@ func (pm *PoolManager) reWarmWhitelistIPs(domain string, ips []string, concurren
 	return pm.preWarmConnectionsBatch(domain, ips, concurrencyLimit)
 }
 
-// preWarmConnectionsBatch 批量预热连接：先建立所有连接，然后只验证一次获取sessionid，应用到所有连接
-// 返回成功加入热连接池的连接数
-func (pm *PoolManager) preWarmConnectionsBatch(domain string, ips []string, concurrencyLimit chan struct{}) int {
-	type connResult struct {
-		conn *UTLSConnection
-		ip   string
-		err  error
+// connResult 表示连接建立的结果
+type connResult struct {
+	conn *UTLSConnection
+	ip   string
+	err  error
+}
+
+// batchProcessor 处理批量连接建立
+type batchProcessor struct {
+	pm                *PoolManager
+	concurrencyLimit  chan struct{}
+	currentBatchSize  int
+	tooManyFilesCount int32
+}
+
+// newBatchProcessor 创建新的批次处理器
+func newBatchProcessor(pm *PoolManager, concurrencyLimit chan struct{}) *batchProcessor {
+	batchSize := pm.config.MaxConcurrentPreWarms
+	if batchSize <= 0 {
+		batchSize = 10
+	}
+	return &batchProcessor{
+		pm:               pm,
+		concurrencyLimit: concurrencyLimit,
+		currentBatchSize: batchSize,
+	}
+}
+
+// processBatch 处理单个批次的IP连接建立
+func (bp *batchProcessor) processBatch(ips []string, domain string) []connResult {
+	connChan := make(chan connResult, len(ips))
+	var wg sync.WaitGroup
+
+	for _, ip := range ips {
+		wg.Add(1)
+		bp.concurrencyLimit <- struct{}{}
+		go func(ipAddr string) {
+			defer func() {
+				<-bp.concurrencyLimit
+				wg.Done()
+			}()
+			// 在握手前再次检查黑名单
+			if bp.pm.blacklist.IsBlocked(ipAddr) {
+				projlogger.Debug("跳过握手已加入黑名单的IP: %s", ipAddr)
+				return
+			}
+			conn, err := establishConnection(ipAddr, domain, bp.pm.config, bp.pm.blacklist.Add)
+			if err != nil && strings.Contains(err.Error(), "too many open files") {
+				atomic.AddInt32(&bp.tooManyFilesCount, 1)
+			}
+			connChan <- connResult{conn: conn, ip: ipAddr, err: err}
+		}(ip)
 	}
 
-	// 第一步：过滤掉已加入黑名单的IP，避免不必要的握手
+	wg.Wait()
+	close(connChan)
+
+	var results []connResult
+	for result := range connChan {
+		results = append(results, result)
+	}
+	return results
+}
+
+// adjustBatchSize 根据错误情况调整批次大小
+func (bp *batchProcessor) adjustBatchSize() {
+	if atomic.LoadInt32(&bp.tooManyFilesCount) > 0 {
+		newSize := bp.currentBatchSize / 2
+		if newSize < 1 {
+			newSize = 1
+		}
+		if newSize != bp.currentBatchSize {
+			projlogger.Debug("检测到文件描述符限制，降低批次大小从 %d 到 %d 并等待 2 秒",
+				bp.currentBatchSize, newSize)
+			bp.currentBatchSize = newSize
+			time.Sleep(2 * time.Second)
+		}
+	}
+}
+
+// processBatches 处理所有批次的IP连接建立
+func (bp *batchProcessor) processBatches(ips []string, domain string) []connResult {
+	var allResults []connResult
+
+	for i := 0; i < len(ips); {
+		// 调整批次大小
+		if i > 0 {
+			bp.adjustBatchSize()
+		}
+
+		end := i + bp.currentBatchSize
+		if end > len(ips) {
+			end = len(ips)
+		}
+		batchIPs := ips[i:end]
+
+		// 处理当前批次
+		results := bp.processBatch(batchIPs, domain)
+		allResults = append(allResults, results...)
+
+		i = end
+
+		// 批次间短暂延迟
+		if i < len(ips) {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
+	return allResults
+}
+
+// filterBlockedIPs 过滤掉已加入黑名单的IP
+func (pm *PoolManager) filterBlockedIPs(ips []string) []string {
 	var validIPs []string
 	for _, ip := range ips {
 		if pm.blacklist.IsBlocked(ip) {
@@ -266,47 +370,20 @@ func (pm *PoolManager) preWarmConnectionsBatch(domain string, ips []string, conc
 		}
 		validIPs = append(validIPs, ip)
 	}
+	return validIPs
+}
 
-	if len(validIPs) == 0 {
-		projlogger.Debug("主机 %s 所有IP都在黑名单中，跳过预热", domain)
-		return 0
-	}
-
-	// 第二步：并发建立所有连接（不验证）
-	connChan := make(chan connResult, len(validIPs))
-	var establishWg sync.WaitGroup
-
-	for _, ip := range validIPs {
-		establishWg.Add(1)
-		concurrencyLimit <- struct{}{}
-		go func(ipAddr string) {
-			defer func() {
-				<-concurrencyLimit
-				establishWg.Done()
-			}()
-			// 在握手前再次检查黑名单（可能在goroutine启动期间被加入黑名单）
-			if pm.blacklist.IsBlocked(ipAddr) {
-				projlogger.Debug("跳过握手已加入黑名单的IP: %s", ipAddr)
-				return
-			}
-			// 设置403回调，将IP加入黑名单
-			conn, err := establishConnection(ipAddr, domain, pm.config, pm.blacklist.Add)
-			connChan <- connResult{conn: conn, ip: ipAddr, err: err}
-		}(ip)
-	}
-
-	// 等待所有连接建立完成
-	establishWg.Wait()
-	close(connChan)
-
-	// 收集成功建立的连接，同时过滤掉已加入黑名单的IP
+// collectEstablishedConns 收集成功建立的连接，过滤掉已加入黑名单的IP
+func (pm *PoolManager) collectEstablishedConns(results []connResult) []connResult {
 	var establishedConns []connResult
-	for result := range connChan {
+	for _, result := range results {
 		if result.err != nil {
 			projlogger.Warn("预热失败(建立连接): %s, 原因: %v", result.ip, result.err)
+			if result.conn != nil {
+				result.conn.Close()
+			}
 			continue
 		}
-		// 检查是否在黑名单中，如果在则关闭连接并跳过
 		if pm.blacklist.IsBlocked(result.ip) {
 			projlogger.Debug("连接建立后发现IP已在黑名单，关闭连接: %s", result.ip)
 			if result.conn != nil {
@@ -316,6 +393,31 @@ func (pm *PoolManager) preWarmConnectionsBatch(domain string, ips []string, conc
 		}
 		establishedConns = append(establishedConns, result)
 	}
+	return establishedConns
+}
+
+// preWarmConnectionsBatch 批量预热连接：先建立所有连接，然后只验证一次获取sessionid，应用到所有连接
+// 返回成功加入热连接池的连接数
+func (pm *PoolManager) preWarmConnectionsBatch(domain string, ips []string, concurrencyLimit chan struct{}) int {
+	// 第一步：过滤掉已加入黑名单的IP
+	validIPs := pm.filterBlockedIPs(ips)
+	if len(validIPs) == 0 {
+		projlogger.Debug("主机 %s 所有IP都在黑名单中，跳过预热", domain)
+		return 0
+	}
+
+	// 第二步：使用批次处理器并发建立所有连接
+	processor := newBatchProcessor(pm, concurrencyLimit)
+	allResults := processor.processBatches(validIPs, domain)
+
+	// 检查文件描述符错误
+	if count := atomic.LoadInt32(&processor.tooManyFilesCount); count > 0 {
+		projlogger.Warn("检测到 %d 个\"too many open files\"错误，建议：1) 降低 max_concurrent_pre_warms 配置值（当前: %d），2) 增加系统文件描述符限制（ulimit -n）",
+			count, pm.config.MaxConcurrentPreWarms)
+	}
+
+	// 收集成功建立的连接
+	establishedConns := pm.collectEstablishedConns(allResults)
 
 	if len(establishedConns) == 0 {
 		projlogger.Warn("主机 %s 没有成功建立的连接", domain)

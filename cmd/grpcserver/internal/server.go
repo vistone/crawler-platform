@@ -654,18 +654,21 @@ func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *ta
 			return nil, 0, fmt.Errorf("HTTP 请求失败(重试 %d 次后仍失败): %w", attempt, err)
 		}
 
+		// 确保响应体在所有情况下都被关闭，防止文件描述符泄漏
+		defer func() {
+			if resp != nil && resp.Body != nil {
+				resp.Body.Close()
+			}
+		}()
+
 		// 请求成功，记录详细日志
 		requestDuration := time.Since(requestStart)
 		requestCount := conn.RequestCount()
 		s.logger.Info("[任务请求成功] 本地IPv6=%s, 远程IPv6=%s, 已完成请求数=%d, 耗时=%v, 状态码=%d, 路径=%s",
 			getIPDisplay(localIP), getIPDisplay(remoteIP), requestCount, requestDuration, resp.StatusCode, path)
 
-		// 请求成功，释放连接并返回
-		s.utlsClient.ReleaseConnection(conn)
-
 		// 成功拿到响应，读取响应体
 		responseBody, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
 		if readErr != nil {
 			lastErr = readErr
 			// 释放连接
@@ -689,7 +692,8 @@ func (s *Server) executeTaskWithHotPool(dataType, hostName, path string, req *ta
 			continue
 		}
 
-		// 正常返回
+		// 正常返回，释放连接
+		s.utlsClient.ReleaseConnection(conn)
 		return responseBody, int32(resp.StatusCode), nil
 	}
 
@@ -1451,4 +1455,17 @@ func getIPDisplay(ip string) string {
 		return "系统默认"
 	}
 	return ip
+}
+
+// GetUTLSMetrics 获取 UTLS 客户端指标（用于调试和监控）
+func (s *Server) GetUTLSMetrics() string {
+	if s.utlsClient == nil {
+		return "UTLS 客户端未初始化"
+	}
+	return s.utlsClient.GetMetricsJSON()
+}
+
+// IsUTLSClientReady 检查 UTLS 客户端是否已就绪
+func (s *Server) IsUTLSClientReady() bool {
+	return s.utlsClient != nil
 }

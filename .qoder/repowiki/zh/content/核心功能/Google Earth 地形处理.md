@@ -2,7 +2,7 @@
 
 <cite>
 **本文档引用的文件**   
-- [terrain.go](file://GoogleEarth/terrain.go) - *更新了DEM插值算法，新增三角形重心坐标插值和最近邻插值回退机制*
+- [terrain.go](file://GoogleEarth/terrain.go)
 - [quadtree_path.go](file://GoogleEarth/quadtree_path.go)
 - [quadtree_numbering.go](file://GoogleEarth/quadtree_numbering.go)
 - [tree_numbering.go](file://GoogleEarth/tree_numbering.go)
@@ -11,14 +11,22 @@
 - [jpeg_comment_date.go](file://GoogleEarth/jpeg_comment_date.go)
 - [proto/terrain.proto](file://GoogleEarth/proto/terrain.proto)
 - [README.md](file://GoogleEarth/README.md)
+- [geauth.go](file://GoogleEarth/geauth.go)
+- [gedbroot.go](file://GoogleEarth/gedbroot.go)
+- [geq2.go](file://GoogleEarth/geq2.go)
+- [geua.go](file://GoogleEarth/geua.go)
+- [qtutils.go](file://GoogleEarth/qtutils.go)
+- [quadtree_packet.go](file://GoogleEarth/quadtree_packet.go)
+- [geqp.go](file://GoogleEarth/geqp.go)
 </cite>
 
 ## 更新摘要
-**变更内容**   
-- 更新了地形数据处理模块的插值算法，实现了完整的DEM插值功能
-- 新增三角形重心坐标插值作为主要方法
-- 增加最近邻插值作为回退机制
-- 更新了相关文档说明和代码注释
+**所做更改**   
+- 更新了项目结构图，反映了当前存在的文件结构
+- 新增了认证管理、DbRoot解析、用户代理管理等新功能章节
+- 更新了地形处理、四叉树管理、数据解密等核心功能的描述
+- 增加了协议缓冲区定义和依赖生成的相关内容
+- 完善了历史影像日期处理和坐标转换功能的说明
 
 ## 目录
 1. [简介](#简介)
@@ -29,12 +37,17 @@
 6. [坐标转换与地理编码](#坐标转换与地理编码)
 7. [数据解密与解压](#数据解密与解压)
 8. [历史影像日期处理](#历史影像日期处理)
-9. [协议缓冲区定义](#协议缓冲区定义)
-10. [依赖与生成](#依赖与生成)
-11. [结论](#结论)
+9. [认证管理](#认证管理)
+10. [DbRoot解析](#dbroot解析)
+11. [用户代理管理](#用户代理管理)
+12. [协议缓冲区定义](#协议缓冲区定义)
+13. [依赖与生成](#依赖与生成)
+14. [结论](#结论)
 
 ## 简介
 本项目是一个用于处理 Google Earth 数据的 Go 语言库，专注于地形数据的解析、四叉树空间索引管理、数据解密和坐标转换。该库提供了完整的地形网格解析功能，支持从原始二进制数据中提取高程信息，并将其转换为标准的数字高程模型（DEM）格式。同时，库中实现了复杂的四叉树编号系统，用于处理 Google Earth 特有的空间数据组织方式。
+
+**更新** 项目现已扩展为包含认证管理、DbRoot解析、用户代理管理等多个功能模块的完整解决方案。
 
 ## 项目结构
 项目结构清晰地组织了 Google Earth 相关的功能模块，主要分为核心处理、协议定义、工具函数和测试代码。
@@ -53,6 +66,11 @@ quadtree_numbering[quadtree_numbering.go]
 quadtree_path[quadtree_path.go]
 terrain[terrain.go]
 tree_numbering[tree_numbering.go]
+geauth[geauth.go]
+geua[geua.go]
+qtutils[qtutils.go]
+quadtree_packet[quadtree_packet.go]
+geqp[geqp.go]
 GoogleEarth --> proto
 GoogleEarth --> pb
 GoogleEarth --> README
@@ -64,28 +82,41 @@ GoogleEarth --> quadtree_numbering
 GoogleEarth --> quadtree_path
 GoogleEarth --> terrain
 GoogleEarth --> tree_numbering
+GoogleEarth --> geauth
+GoogleEarth --> geua
+GoogleEarth --> qtutils
+GoogleEarth --> quadtree_packet
+GoogleEarth --> geqp
 proto --> diorama_streaming[dorama_streaming.proto]
 proto --> quadtreeset[quadtreeset.proto]
 proto --> streaming_imagery[streaming_imagery.proto]
 proto --> terrain_proto[terrain.proto]
 ```
 
-**图示来源**
+**Diagram sources**
 - [GoogleEarth/README.md](file://GoogleEarth/README.md)
+- [GoogleEarth/terrain.go](file://GoogleEarth/terrain.go)
+- [GoogleEarth/quadtree_path.go](file://GoogleEarth/quadtree_path.go)
+- [GoogleEarth/quadtree_numbering.go](file://GoogleEarth/quadtree_numbering.go)
+- [GoogleEarth/tree_numbering.go](file://GoogleEarth/tree_numbering.go)
+- [GoogleEarth/constants.go](file://GoogleEarth/constants.go)
+- [GoogleEarth/gecrypt.go](file://GoogleEarth/gecrypt.go)
+- [GoogleEarth/jpeg_comment_date.go](file://GoogleEarth/jpeg_comment_date.go)
+- [GoogleEarth/proto/terrain.proto](file://GoogleEarth/proto/terrain.proto)
 
-**章节来源**
+**Section sources**
 - [GoogleEarth/README.md](file://GoogleEarth/README.md)
 
 ## 核心组件
-该库的核心组件围绕地形数据处理、四叉树管理和数据解密展开。
+该库的核心组件围绕地形数据处理、四叉树管理和数据解密展开，现已扩展为包含多个功能模块的完整系统。
 
-**章节来源**
+**Section sources**
 - [GoogleEarth/terrain.go](file://GoogleEarth/terrain.go)
 - [GoogleEarth/quadtree_path.go](file://GoogleEarth/quadtree_path.go)
 - [GoogleEarth/gecrypt.go](file://GoogleEarth/gecrypt.go)
 
 ## 地形数据处理
-地形处理模块提供了完整的地形网格解析和管理功能，现已更新为包含完整的DEM插值算法。
+地形处理模块提供了完整的地形网格解析和管理功能。
 
 ```mermaid
 classDiagram
@@ -130,17 +161,11 @@ Mesh --> MeshFace : "包含"
 Terrain --> Mesh : "包含"
 ```
 
-**图示来源**
-- [GoogleEarth/terrain.go](file://GoogleEarth/terrain.go#L30-L307)
+**Diagram sources**
+- [GoogleEarth/terrain.go:30-352](file://GoogleEarth/terrain.go#L30-L352)
 
-**章节来源**
-- [GoogleEarth/terrain.go](file://GoogleEarth/terrain.go#L30-L307)
-
-### DEM插值算法更新
-地形处理模块已更新实现完整的DEM插值算法，采用三角形重心坐标插值作为主要方法，通过计算查询点在三角形面内的重心坐标权重，使用顶点高程的加权和来确定栅格单元的高程值。同时增加了最近邻插值作为回退机制，确保在查询点不落在任何三角形内时仍能获取有效高程值，提高了数据处理的完整性和可靠性。
-
-**章节来源**
-- [terrain.go](file://GoogleEarth/terrain.go#L219-L294) - *更新了DEM插值算法，新增三角形重心坐标插值和最近邻插值回退机制*
+**Section sources**
+- [GoogleEarth/terrain.go:30-352](file://GoogleEarth/terrain.go#L30-L352)
 
 ## 四叉树路径与编号
 四叉树路径和编号系统是处理 Google Earth 空间数据的核心。
@@ -193,8 +218,8 @@ class TreeNumbering {
 +TraversalPathToSubindex(path QuadtreePath) int
 +InorderToTraversalPath(inorder int) QuadtreePath
 +SubindexToTraversalPath(subindex int) QuadtreePath
-+GetChildrenInorder(inorder int) ([]int, bool)
-+GetChildrenSubindex(subindex int) ([]int, bool)
++GetChildrenInorder(children []int, bool)
++GetChildrenSubindex(children []int, bool)
 +InRange(num int) bool
 }
 class nodeInfo {
@@ -207,15 +232,15 @@ QuadtreeNumbering --> TreeNumbering : "嵌入"
 TreeNumbering --> nodeInfo : "包含"
 ```
 
-**图示来源**
-- [GoogleEarth/quadtree_path.go](file://GoogleEarth/quadtree_path.go#L1-L265)
-- [GoogleEarth/quadtree_numbering.go](file://GoogleEarth/quadtree_numbering.go#L1-L204)
-- [GoogleEarth/tree_numbering.go](file://GoogleEarth/tree_numbering.go#L1-L298)
+**Diagram sources**
+- [GoogleEarth/quadtree_path.go:1-270](file://GoogleEarth/quadtree_path.go#L1-L270)
+- [GoogleEarth/quadtree_numbering.go:1-204](file://GoogleEarth/quadtree_numbering.go#L1-L204)
+- [GoogleEarth/tree_numbering.go:1-298](file://GoogleEarth/tree_numbering.go#L1-L298)
 
-**章节来源**
-- [GoogleEarth/quadtree_path.go](file://GoogleEarth/quadtree_path.go#L1-L265)
-- [GoogleEarth/quadtree_numbering.go](file://GoogleEarth/quadtree_numbering.go#L1-L204)
-- [GoogleEarth/tree_numbering.go](file://GoogleEarth/tree_numbering.go#L1-L298)
+**Section sources**
+- [GoogleEarth/quadtree_path.go:1-270](file://GoogleEarth/quadtree_path.go#L1-L270)
+- [GoogleEarth/quadtree_numbering.go:1-204](file://GoogleEarth/quadtree_numbering.go#L1-L204)
+- [GoogleEarth/tree_numbering.go:1-298](file://GoogleEarth/tree_numbering.go#L1-L298)
 
 ## 坐标转换与地理编码
 坐标转换功能实现了经纬度与四叉树地址之间的相互转换。
@@ -239,13 +264,13 @@ ParseMapsPath --> ReturnLevelRowCol["返回(level, row, col)"]
 End([结束])
 ```
 
-**图示来源**
-- [GoogleEarth/quadtree_path.go](file://GoogleEarth/quadtree_path.go#L1-L265)
-- [GoogleEarth/quadtree_numbering.go](file://GoogleEarth/quadtree_numbering.go#L1-L204)
+**Diagram sources**
+- [GoogleEarth/quadtree_path.go:1-270](file://GoogleEarth/quadtree_path.go#L1-L270)
+- [GoogleEarth/quadtree_numbering.go:1-204](file://GoogleEarth/quadtree_numbering.go#L1-L204)
 
-**章节来源**
-- [GoogleEarth/quadtree_path.go](file://GoogleEarth/quadtree_path.go#L1-L265)
-- [GoogleEarth/quadtree_numbering.go](file://GoogleEarth/quadtree_numbering.go#L1-L204)
+**Section sources**
+- [GoogleEarth/quadtree_path.go:1-270](file://GoogleEarth/quadtree_path.go#L1-L270)
+- [GoogleEarth/quadtree_numbering.go:1-204](file://GoogleEarth/quadtree_numbering.go#L1-L204)
 
 ## 数据解密与解压
 数据解密模块提供了对 Google Earth 加密数据的解密和解压功能。
@@ -281,11 +306,11 @@ UnpackGEZlib-->>Client : 返回原数据副本
 end
 ```
 
-**图示来源**
-- [GoogleEarth/gecrypt.go](file://GoogleEarth/gecrypt.go#L1-L175)
+**Diagram sources**
+- [GoogleEarth/gecrypt.go:1-182](file://GoogleEarth/gecrypt.go#L1-L182)
 
-**章节来源**
-- [GoogleEarth/gecrypt.go](file://GoogleEarth/gecrypt.go#L1-L175)
+**Section sources**
+- [GoogleEarth/gecrypt.go:1-182](file://GoogleEarth/gecrypt.go#L1-L182)
 
 ## 历史影像日期处理
 历史影像日期处理模块提供了对 JPEG 注释中日期信息的解析和管理。
@@ -318,11 +343,91 @@ class JpegCommentDate {
 }
 ```
 
-**图示来源**
-- [GoogleEarth/jpeg_comment_date.go](file://GoogleEarth/jpeg_comment_date.go#L1-L229)
+**Diagram sources**
+- [GoogleEarth/jpeg_comment_date.go:1-229](file://GoogleEarth/jpeg_comment_date.go#L1-L229)
 
-**章节来源**
-- [GoogleEarth/jpeg_comment_date.go](file://GoogleEarth/jpeg_comment_date.go#L1-L229)
+**Section sources**
+- [GoogleEarth/jpeg_comment_date.go:1-229](file://GoogleEarth/jpeg_comment_date.go#L1-L229)
+
+## 认证管理
+认证管理模块提供了 Google Earth 客户端认证功能，包括会话管理和认证密钥生成。
+
+```mermaid
+classDiagram
+class Auth {
++Session string
++ClearAuth() void
++GetSession() string
+}
+class AuthManager {
++GenerateRandomGeAuth(version byte) ([]byte, error)
++ParseSessionFromResponse(responseBody []byte) (string, error)
++GEAUTH1 []byte
++GEAUTH2 []byte
++GEAUTH3 []byte
+}
+Auth --> AuthManager : "使用"
+```
+
+**Diagram sources**
+- [GoogleEarth/geauth.go:1-116](file://GoogleEarth/geauth.go#L1-L116)
+
+**Section sources**
+- [GoogleEarth/geauth.go:1-116](file://GoogleEarth/geauth.go#L1-L116)
+
+## DbRoot解析
+DbRoot解析模块负责解析 Google Earth 的数据库根配置，提取加密密钥和提供商标识。
+
+```mermaid
+flowchart TD
+Start([开始]) --> ParseDbRootComplete["ParseDbRootComplete(body)"]
+ParseDbRootComplete --> ExtractHeader["提取头部信息"]
+ExtractHeader --> ExtractCryptKey["提取CryptKey(1024字节)"]
+ExtractCryptKey --> CalcVersion["计算版本号"]
+CalcVersion --> ExtractEncryptedData["提取加密数据"]
+ExtractEncryptedData --> DecryptData["使用GeDecrypt解密"]
+DecryptData --> FindZlib["查找zlib数据"]
+FindZlib --> Decompress["解压缩zlib数据"]
+Decompress --> ParseProviderInfo["解析ProviderInfo"]
+ParseProviderInfo --> ReturnResult["返回DbRootData"]
+```
+
+**Diagram sources**
+- [GoogleEarth/gedbroot.go:145-219](file://GoogleEarth/gedbroot.go#L145-L219)
+
+**Section sources**
+- [GoogleEarth/gedbroot.go:1-380](file://GoogleEarth/gedbroot.go#L1-L380)
+
+## 用户代理管理
+用户代理管理模块提供了随机生成符合 Google Earth 客户端规范的 User-Agent 字符串。
+
+```mermaid
+classDiagram
+class UserAgent {
++Version string
++OS string
++OSVersion string
++Language string
++KMLVersion string
++ClientType string
++AppType string
++String() string
+}
+class UserAgentGenerator {
++RandomUserAgent() string
++GetLanguageFromUserAgent(ua string) string
++ConvertLanguageToAcceptLanguage(langCode string) string
++GetRandomAcceptLanguage() string
++GetAcceptLanguageFromBrowserUA(ua string) string
+}
+UserAgent --> UserAgentGenerator : "生成"
+```
+
+**Diagram sources**
+- [GoogleEarth/geua.go:1-283](file://GoogleEarth/geua.go#L1-L283)
+
+**Section sources**
+- [GoogleEarth/geua.go:1-283](file://GoogleEarth/geua.go#L1-L283)
 
 ## 协议缓冲区定义
 协议缓冲区定义了地形数据的结构化格式。
@@ -345,11 +450,11 @@ bytes original_terrain_packet
 WaterSurfaceTileProto ||--o{ TerrainPacketExtraDataProto : "包含"
 ```
 
-**图示来源**
-- [GoogleEarth/proto/terrain.proto](file://GoogleEarth/proto/terrain.proto#L1-L43)
+**Diagram sources**
+- [GoogleEarth/proto/terrain.proto:1-43](file://GoogleEarth/proto/terrain.proto#L1-L43)
 
-**章节来源**
-- [GoogleEarth/proto/terrain.proto](file://GoogleEarth/proto/terrain.proto#L1-L43)
+**Section sources**
+- [GoogleEarth/proto/terrain.proto:1-43](file://GoogleEarth/proto/terrain.proto#L1-L43)
 
 ## 依赖与生成
 项目依赖于 Protocol Buffers 运行时库，并提供了代码生成的说明。
@@ -369,11 +474,13 @@ Serialize --> Deserialize["从二进制或JSON反序列化"]
 Deserialize --> End([结束])
 ```
 
-**图示来源**
-- [GoogleEarth/README.md](file://GoogleEarth/README.md#L100-L115)
+**Diagram sources**
+- [GoogleEarth/README.md:100-115](file://GoogleEarth/README.md#L100-L115)
 
-**章节来源**
-- [GoogleEarth/README.md](file://GoogleEarth/README.md#L92-L145)
+**Section sources**
+- [GoogleEarth/README.md:92-145](file://GoogleEarth/README.md#L92-L145)
 
 ## 结论
-本项目提供了一个完整的 Google Earth 地形数据处理解决方案，涵盖了从数据解密、四叉树空间索引管理到地形网格解析的各个方面。通过精心设计的 Go 语言接口，开发者可以方便地处理 Google Earth 的地形数据，实现高程信息的提取和分析。库中的四叉树编号系统准确地实现了 Google Earth 特有的空间数据组织方式，确保了与原始数据格式的兼容性。最新更新实现了完整的DEM插值算法，采用三角形重心坐标插值作为主要方法，并增加了最近邻插值作为回退机制，显著提高了数据处理的完整性和可靠性。
+本项目提供了一个完整的 Google Earth 地形数据处理解决方案，涵盖了从数据解密、四叉树空间索引管理到地形网格解析的各个方面。通过精心设计的 Go 语言接口，开发者可以方便地处理 Google Earth 的地形数据，实现高程信息的提取和分析。库中的四叉树编号系统准确地实现了 Google Earth 特有的空间数据组织方式，确保了与原始数据格式的兼容性。
+
+**更新** 项目现已扩展为包含认证管理、DbRoot解析、用户代理管理等多个功能模块的完整生态系统，为 Google Earth 数据的全面处理提供了强有力的支持。

@@ -229,7 +229,7 @@ func defaultConfig() *Config {
 		UtlsClient: UtlsClientConfig{
 			MaxConnsPerHost:       10,
 			PreWarmInterval:       "5m",
-			MaxConcurrentPreWarms: 20,
+			MaxConcurrentPreWarms: 10, // 降低默认值以避免文件描述符耗尽
 			ConnTimeout:           "10s",
 			IdleTimeout:           "30m",
 			MaxConnLifetime:       "1h",
